@@ -21,7 +21,7 @@
 .page {
   container: codex-inspection-page / inline-size;
   display: grid;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
 }
 
@@ -35,9 +35,9 @@
 }
 
 .panel {
-  padding: 22px;
+  padding: 18px;
   display: grid;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -45,7 +45,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
 }
 
 .panelHeading {
@@ -75,15 +75,15 @@
 
 .statusPanel {
   display: grid;
-  gap: 16px;
-  padding: 22px;
+  gap: 12px;
+  padding: 18px;
 }
 
 .statusBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -91,14 +91,14 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
 }
 
 .statusActions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -107,9 +107,9 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: 999px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
   border: 1px solid var(--inspect-line);
   background: var(--inspect-surface-elevated);
   color: var(--inspect-ink);
@@ -168,9 +168,9 @@
 .statusMeta span {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 12px;
   background: var(--inspect-surface-muted);
   white-space: nowrap;
 }
@@ -203,22 +203,22 @@
 }
 
 .iconButton {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  border-radius: 999px;
+  border-radius: 12px;
 }
 
 .foldButton {
   min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
+  padding: 0 10px;
+  border-radius: 12px;
 }
 
 .quickLink {
-  min-height: 36px;
-  padding: 0 12px;
-  border-radius: 999px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 12px;
   color: var(--inspect-muted);
 }
 
@@ -240,9 +240,9 @@
 
 .progressSection {
   display: grid;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--inspect-accent) 22%, var(--inspect-line));
   background: color-mix(in srgb, var(--inspect-accent) 6%, var(--inspect-surface));
 }
@@ -252,7 +252,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
 .progressHeader strong {
@@ -294,15 +294,15 @@
 .summaryGrid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 .summaryCard {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  min-height: 138px;
-  padding: 18px;
+  min-height: 112px;
+  padding: 14px;
   background: var(--inspect-surface-elevated);
   transition:
     transform 0.18s ease,
@@ -343,7 +343,7 @@
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  font-size: clamp(24px, 2vw, 32px);
+  font-size: clamp(22px, 1.8vw, 30px);
   line-height: 1;
   letter-spacing: 0;
   text-overflow: ellipsis;
@@ -380,7 +380,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
+  gap: 8px;
   margin-top: -2px;
   flex-wrap: wrap;
 }
@@ -388,9 +388,9 @@
 .segmentedControl {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 999px;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 14px;
   border: 1px solid var(--inspect-line);
   background: var(--inspect-surface-elevated);
 }
@@ -398,11 +398,11 @@
 .segmentButton {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 0 14px;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 12px;
   background: transparent;
   color: var(--inspect-muted);
   font-size: 13px;
@@ -432,10 +432,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 22px;
+  min-width: 20px;
   height: 18px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--inspect-line) 86%, transparent);
   color: inherit;
   font-size: 11px;
@@ -457,7 +457,7 @@
   width: 100%;
   min-width: 920px;
   border-collapse: separate;
-  border-spacing: 0 10px;
+  border-spacing: 0 8px;
   table-layout: fixed;
 }
 
@@ -501,7 +501,7 @@
 }
 
 .table tbody td {
-  padding: 14px 14px;
+  padding: 10px 12px;
   vertical-align: middle;
   border-top: 1px solid var(--inspect-line);
   border-bottom: 1px solid var(--inspect-line);
@@ -510,12 +510,12 @@
 
 .table tbody td:first-child {
   border-left: 1px solid var(--inspect-line);
-  border-radius: 18px 0 0 18px;
+  border-radius: 16px 0 0 16px;
 }
 
 .table tbody td:last-child {
   border-right: 1px solid var(--inspect-line);
-  border-radius: 0 18px 18px 0;
+  border-radius: 0 16px 16px 0;
 }
 
 .primaryCell {
@@ -569,7 +569,7 @@
   align-items: center;
   min-height: 26px;
   padding: 0 10px;
-  border-radius: 999px;
+  border-radius: 12px;
   border: 1px solid var(--inspect-line);
   background: var(--inspect-surface);
   color: var(--inspect-muted);
@@ -597,7 +597,7 @@
   align-items: center;
   min-height: 26px;
   padding: 0 10px;
-  border-radius: 999px;
+  border-radius: 12px;
   font-size: 12px;
   font-weight: 700;
 }
@@ -644,7 +644,7 @@
   gap: 12px;
   align-items: start;
   padding: 8px 12px 8px 16px;
-  border-radius: 10px;
+  border-radius: 12px;
   border: 0;
   background: transparent;
   transition: background-color 0.18s ease;
@@ -692,8 +692,8 @@
 }
 
 .logCollapsedBar {
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: var(--inspect-surface-muted);
   color: var(--inspect-muted);
   font-size: 13px;
@@ -701,18 +701,18 @@
 
 .settingsModal :global(.modal-body) {
   display: grid;
-  gap: 20px;
+  gap: 14px;
 }
 
 .settingsBody {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .settingsSectionCard {
   display: grid;
-  gap: 16px;
-  padding: 18px 20px 20px;
+  gap: 12px;
+  padding: 14px 16px 16px;
   border: 1px solid var(--inspect-line);
   border-radius: 8px;
   background: var(--inspect-surface);
@@ -747,7 +747,7 @@
 .settingsGrid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 .settingsGridStrategy .settingsField {
@@ -772,11 +772,11 @@
 }
 
 .settingsField :global(.input) {
-  min-height: 44px;
+  min-height: 40px;
 }
 
 .settingsField input {
-  min-height: 44px;
+  min-height: 40px;
 }
 
 .settingsAutoContent {
@@ -793,7 +793,7 @@
 .settingsAutoCards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .settingsAutoOption {
@@ -804,10 +804,10 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  min-height: 132px;
-  padding: 16px;
+  min-height: 110px;
+  padding: 12px;
   border: 1px solid color-mix(in srgb, var(--auto-color) 24%, var(--inspect-line));
   border-radius: 8px;
   background: color-mix(in srgb, var(--auto-color) 5%, var(--inspect-surface));
@@ -851,8 +851,8 @@
 .settingsAutoOptionIcon {
   display: inline-grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--auto-color) 12%, var(--inspect-surface));
   color: var(--auto-color-strong);
@@ -884,7 +884,7 @@
   width: 22px;
   height: 22px;
   border: 1px solid color-mix(in srgb, var(--auto-color) 42%, var(--inspect-line));
-  border-radius: 999px;
+  border-radius: 8px;
   color: var(--inspect-surface);
 }
 

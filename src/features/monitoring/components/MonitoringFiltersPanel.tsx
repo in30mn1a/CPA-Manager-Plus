@@ -1,12 +1,7 @@
 import type { TFunction } from 'i18next';
 import { Input } from '@/components/ui/Input';
 import { Select, type SelectOption } from '@/components/ui/Select';
-import {
-  IconRefreshCw,
-  IconSearch,
-  IconSlidersHorizontal,
-  IconTimer,
-} from '@/components/ui/icons';
+import { IconRefreshCw, IconSearch, IconSlidersHorizontal, IconTimer } from '@/components/ui/icons';
 import { MonitoringPanel } from '@/features/monitoring/components/MonitoringPanel';
 import type { MonitoringTimeRange } from '@/features/monitoring/hooks/useMonitoringData';
 import styles from '../MonitoringCenterPage.module.scss';
@@ -110,6 +105,17 @@ export function MonitoringFiltersPanel({
           ))}
         </div>
 
+        <div className={styles.filterSearchInputWrap}>
+          <Input
+            value={searchInput}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder={t('monitoring.search_placeholder')}
+            className={styles.filterSearchInput}
+            rightElement={<IconSearch size={16} />}
+            aria-label={t('monitoring.search_placeholder')}
+          />
+        </div>
+
         <div className={styles.refreshControls}>
           <div className={styles.autoRefreshField}>
             <span className={styles.autoRefreshLabel}>
@@ -142,6 +148,11 @@ export function MonitoringFiltersPanel({
             />
             <span className={styles.refreshButtonLabel}>{t('usage_stats.refresh')}</span>
           </button>
+
+          <button type="button" className={styles.clearButton} onClick={onClearFilters}>
+            <IconSlidersHorizontal size={16} />
+            <span>{t('monitoring.clear_filters')}</span>
+          </button>
         </div>
       </div>
 
@@ -153,6 +164,7 @@ export function MonitoringFiltersPanel({
               options={accountOptions}
               onChange={onAccountFilterChange}
               ariaLabel={t('monitoring.filter_account')}
+              triggerClassName={styles.filterSelectTrigger}
             />
           </div>
           <Select
@@ -160,50 +172,36 @@ export function MonitoringFiltersPanel({
             options={providerOptions}
             onChange={onProviderChange}
             ariaLabel={t('monitoring.filter_provider')}
+            triggerClassName={styles.filterSelectTrigger}
           />
           <Select
             value={selectedModel}
             options={modelOptions}
             onChange={onModelChange}
             ariaLabel={t('monitoring.filter_model')}
+            triggerClassName={styles.filterSelectTrigger}
           />
           <Select
             value={selectedChannel}
             options={channelOptions}
             onChange={onChannelChange}
             ariaLabel={t('monitoring.filter_channel')}
+            triggerClassName={styles.filterSelectTrigger}
           />
           <Select
             value={selectedApiKeyHash}
             options={apiKeyOptions}
             onChange={onApiKeyChange}
             ariaLabel={t('monitoring.filter_api_key')}
+            triggerClassName={styles.filterSelectTrigger}
           />
           <Select
             value={selectedStatus}
             options={statusOptions}
             onChange={onStatusChange}
             ariaLabel={t('monitoring.filter_status')}
+            triggerClassName={styles.filterSelectTrigger}
           />
-        </div>
-
-        <div className={styles.filterSearchRow}>
-          <div className={styles.filterSearchInputWrap}>
-            <Input
-              value={searchInput}
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder={t('monitoring.search_placeholder')}
-              className={styles.filterSearchInput}
-              rightElement={<IconSearch size={16} />}
-              aria-label={t('monitoring.search_placeholder')}
-            />
-          </div>
-          <div className={styles.filterSearchAction}>
-            <button type="button" className={styles.clearButton} onClick={onClearFilters}>
-              <IconSlidersHorizontal size={16} />
-              <span>{t('monitoring.clear_filters')}</span>
-            </button>
-          </div>
         </div>
       </div>
 
