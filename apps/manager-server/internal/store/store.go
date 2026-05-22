@@ -10,12 +10,15 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 type Setup = model.Setup
 type ManagerConfig = model.ManagerConfig
+type AdminCredential = model.AdminCredential
+type BootstrapState = model.BootstrapState
 type ManagerCPAConnectionConfig = model.ManagerCPAConnectionConfig
 type ManagerCollectorConfig = model.ManagerCollectorConfig
 type ManagerExternalUsageServiceConfig = model.ManagerExternalUsageServiceConfig
@@ -47,18 +50,18 @@ type Store struct {
 	APIKeyAliases apikeyalias.Repository
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string, protector ...*security.Protector) (*Store, error) {
 	db, err := sqliterepo.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return New(db), nil
+	return New(db, protector...), nil
 }
 
-func New(db *sql.DB) *Store {
+func New(db *sql.DB, protector ...*security.Protector) *Store {
 	return &Store{
 		db:            db,
-		Settings:      setting.New(db),
+		Settings:      setting.New(db, protector...),
 		UsageEvents:   usageevent.New(db),
 		DeadLetters:   deadletter.New(db),
 		ModelPrices:   modelprice.New(db),
@@ -87,6 +90,26 @@ func (s *Store) SaveManagerConfig(ctx context.Context, cfg ManagerConfig) error 
 
 func (s *Store) LoadManagerConfig(ctx context.Context) (ManagerConfig, bool, error) {
 	return s.Settings.LoadManagerConfig(ctx)
+}
+
+func (s *Store) SaveAdminCredential(ctx context.Context, credential AdminCredential) error {
+	return s.Settings.SaveAdminCredential(ctx, credential)
+}
+
+func (s *Store) LoadAdminCredential(ctx context.Context) (AdminCredential, bool, error) {
+	return s.Settings.LoadAdminCredential(ctx)
+}
+
+func (s *Store) SaveBootstrapState(ctx context.Context, state BootstrapState) error {
+	return s.Settings.SaveBootstrapState(ctx, state)
+}
+
+func (s *Store) LoadBootstrapState(ctx context.Context) (BootstrapState, bool, error) {
+	return s.Settings.LoadBootstrapState(ctx)
+}
+
+func (s *Store) HasHistoricalData(ctx context.Context) (bool, error) {
+	return s.Settings.HasHistoricalData(ctx)
 }
 
 func (s *Store) LoadModelPrices(ctx context.Context) (map[string]ModelPrice, error) {

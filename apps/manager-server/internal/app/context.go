@@ -5,7 +5,9 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	apikeyaliassvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/apikeyalias"
+	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	collectorsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	dashboardsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/dashboard"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
@@ -25,8 +27,10 @@ type Context struct {
 
 	StartedAt int64
 	ServiceID string
+	Bootstrap bootstrapsvc.Result
 
 	SetupService         *setupsvc.Service
+	AdminAuthService     *adminauthsvc.Service
 	ManagerConfigService *managerconfigsvc.Service
 	CollectorService     *collectorsvc.Service
 	UsageService         *usagesvc.Service
@@ -56,6 +60,7 @@ func FromExisting(
 		Collector:            collectorManager,
 		StartedAt:            startedAt,
 		ServiceID:            serviceID,
+		AdminAuthService:     adminauthsvc.New(cfg, st),
 		SetupService:         setupsvc.New(cfg, st, collectorService, managerConfigService, startedAt, serviceID),
 		ManagerConfigService: managerConfigService,
 		CollectorService:     collectorService,

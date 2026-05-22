@@ -119,7 +119,7 @@ func TestServerCompatSetupConfigAndEnvLock(t *testing.T) {
 	handler, _ := newCompatHandler(t, cfg, nil)
 
 	setupBody := `{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"management-key","requestMonitoringEnabled":false,"ensureUsageStatisticsEnabled":false}`
-	setupRR := testutil.Request(t, handler, http.MethodPost, "/setup", setupBody, "")
+	setupRR := testutil.Request(t, handler, http.MethodPost, "/setup", setupBody, testutil.AdminKey)
 	testutil.RequireStatus(t, setupRR, http.StatusOK)
 	if !strings.Contains(setupRR.Body.String(), `"ok":true`) || !strings.Contains(setupRR.Body.String(), cpa.URL()) {
 		t.Fatalf("setup body = %s", setupRR.Body.String())
@@ -135,7 +135,7 @@ func TestServerCompatSetupConfigAndEnvLock(t *testing.T) {
 		t.Fatalf("configured = false after setup")
 	}
 
-	configRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", "management-key")
+	configRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", testutil.AdminKey)
 	testutil.RequireStatus(t, configRR, http.StatusOK)
 	if !strings.Contains(configRR.Body.String(), `"source":"db"`) ||
 		!strings.Contains(configRR.Body.String(), `"cpaBaseUrl":"`+cpa.URL()+`"`) ||
@@ -144,7 +144,7 @@ func TestServerCompatSetupConfigAndEnvLock(t *testing.T) {
 	}
 
 	updateBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"management-key"},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000},"externalUsageService":{"enabled":true,"serviceBase":"http://usage.local"}}}`
-	updateRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", updateBody, "management-key")
+	updateRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", updateBody, testutil.AdminKey)
 	testutil.RequireStatus(t, updateRR, http.StatusOK)
 	if !strings.Contains(updateRR.Body.String(), `"enabled":false`) ||
 		!strings.Contains(updateRR.Body.String(), `"serviceBase":"http://usage.local"`) {
@@ -156,10 +156,48 @@ func TestServerCompatSetupConfigAndEnvLock(t *testing.T) {
 	envCfg.ManagementKey = "management-key"
 	envHandler, _ := newCompatHandler(t, envCfg, nil)
 	conflictBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"http://other.local","managementKey":"other-key"},"collector":{"enabled":false}}}`
-	conflictRR := testutil.Request(t, envHandler, http.MethodPut, "/usage-service/config", conflictBody, "management-key")
+	conflictRR := testutil.Request(t, envHandler, http.MethodPut, "/usage-service/config", conflictBody, testutil.AdminKey)
 	testutil.RequireStatus(t, conflictRR, http.StatusConflict)
 	if !strings.Contains(conflictRR.Body.String(), `"code":"connection_env_managed"`) {
 		t.Fatalf("conflict body = %s", conflictRR.Body.String())
+	}
+}
+
+func TestServerCompatExternalPanelModeUsesCPAManagementKey(t *testing.T) {
+	cpa := testutil.NewCPAMock(t)
+	cfg := testutil.NewConfig(t)
+	handler, db := newCompatHandler(t, cfg, nil)
+
+	openConfigRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", "")
+	testutil.RequireStatus(t, openConfigRR, http.StatusOK)
+
+	configBody := `{"config":{"cpaConnection":{"cpaBaseUrl":"` + cpa.URL() + `","managementKey":"management-key"},"collector":{"enabled":false,"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":500,"queryLimit":50000},"externalUsageService":{"enabled":true,"serviceBase":"http://usage.local"}}}`
+	saveRR := testutil.Request(t, handler, http.MethodPut, "/usage-service/config", configBody, "management-key")
+	testutil.RequireStatus(t, saveRR, http.StatusOK)
+	if !strings.Contains(saveRR.Body.String(), `"serviceBase":"http://usage.local"`) {
+		t.Fatalf("save body = %s", saveRR.Body.String())
+	}
+
+	wrongKeyRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", "wrong-key")
+	testutil.RequireStatus(t, wrongKeyRR, http.StatusUnauthorized)
+	if !strings.Contains(wrongKeyRR.Body.String(), `"code":"invalid_management_key"`) {
+		t.Fatalf("wrong key body = %s", wrongKeyRR.Body.String())
+	}
+
+	configRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", "management-key")
+	testutil.RequireStatus(t, configRR, http.StatusOK)
+	if !strings.Contains(configRR.Body.String(), `"source":"db"`) ||
+		!strings.Contains(configRR.Body.String(), `"cpaBaseUrl":"`+cpa.URL()+`"`) {
+		t.Fatalf("config body = %s", configRR.Body.String())
+	}
+
+	if _, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("external-panel-usage", 10)}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	usageRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage", "", "management-key")
+	testutil.RequireStatus(t, usageRR, http.StatusOK)
+	if !strings.Contains(usageRR.Body.String(), `"total_requests":1`) {
+		t.Fatalf("usage body = %s", usageRR.Body.String())
 	}
 }
 
@@ -167,7 +205,9 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	unconfiguredHandler, _ := newCompatHandler(t, cfg, nil)
 	openRR := testutil.Request(t, unconfiguredHandler, http.MethodGet, "/status", "", "")
-	testutil.RequireStatus(t, openRR, http.StatusOK)
+	testutil.RequireStatus(t, openRR, http.StatusUnauthorized)
+	authorizedOpenRR := testutil.Request(t, unconfiguredHandler, http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, authorizedOpenRR, http.StatusOK)
 
 	cpa := testutil.NewCPAMock(t)
 	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
@@ -183,7 +223,7 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 	unauthorizedRR := testutil.Request(t, configuredHandler, http.MethodGet, "/status", "", "")
 	testutil.RequireStatus(t, unauthorizedRR, http.StatusUnauthorized)
 
-	statusRR := testutil.Request(t, configuredHandler, http.MethodGet, "/status", "", "management-key")
+	statusRR := testutil.Request(t, configuredHandler, http.MethodGet, "/status", "", testutil.AdminKey)
 	testutil.RequireStatus(t, statusRR, http.StatusOK)
 	if !strings.Contains(statusRR.Body.String(), `"events":1`) ||
 		!strings.Contains(statusRR.Body.String(), `"deadLetters":1`) ||
@@ -197,7 +237,7 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
 	handler, db := newCompatHandler(t, testutil.NewConfig(t), setup)
 
-	emptyRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage", "", "management-key")
+	emptyRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage", "", testutil.AdminKey)
 	testutil.RequireStatus(t, emptyRR, http.StatusOK)
 	if !strings.Contains(emptyRR.Body.String(), `"total_requests":0`) {
 		t.Fatalf("empty usage body = %s", emptyRR.Body.String())
@@ -207,14 +247,14 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert usage event: %v", err)
 	}
-	usageRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage", "", "management-key")
+	usageRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage", "", testutil.AdminKey)
 	testutil.RequireStatus(t, usageRR, http.StatusOK)
 	if !strings.Contains(usageRR.Body.String(), `"total_requests":1`) ||
 		!strings.Contains(usageRR.Body.String(), `"gpt-test"`) {
 		t.Fatalf("usage body = %s", usageRR.Body.String())
 	}
 
-	exportRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage/export", "", "management-key")
+	exportRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/usage/export", "", testutil.AdminKey)
 	testutil.RequireStatus(t, exportRR, http.StatusOK)
 	if !strings.Contains(exportRR.Header().Get("Content-Type"), "application/x-ndjson") ||
 		!strings.Contains(exportRR.Body.String(), `"event_hash":"usage-event-1"`) {
@@ -222,7 +262,7 @@ func TestServerCompatUsageRoutes(t *testing.T) {
 	}
 
 	importLine := `{"event_hash":"usage-event-2","timestamp_ms":1778000001000,"timestamp":"2026-05-06T00:00:01Z","model":"gpt-test","endpoint":"POST /v1/chat/completions","input_tokens":2,"output_tokens":3,"total_tokens":5,"failed":false}`
-	importRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/usage/import", importLine+"\n", "management-key")
+	importRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/usage/import", importLine+"\n", testutil.AdminKey)
 	testutil.RequireStatus(t, importRR, http.StatusOK)
 	if !strings.Contains(importRR.Body.String(), `"format":"usage_service_jsonl"`) ||
 		!strings.Contains(importRR.Body.String(), `"added":1`) {
@@ -255,11 +295,11 @@ func TestServerCompatDashboardSummary(t *testing.T) {
 	unauthorizedRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/dashboard/summary?today_start_ms=1778000000000", "", "")
 	testutil.RequireStatus(t, unauthorizedRR, http.StatusUnauthorized)
 
-	badRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/dashboard/summary", "", "management-key")
+	badRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/dashboard/summary", "", testutil.AdminKey)
 	testutil.RequireStatus(t, badRR, http.StatusBadRequest)
 
 	target := "/v0/management/dashboard/summary?today_start_ms=1778000000000&now_ms=" + strconv.FormatInt(nowMS, 10)
-	rr := testutil.Request(t, handler, http.MethodGet, target, "", "management-key")
+	rr := testutil.Request(t, handler, http.MethodGet, target, "", testutil.AdminKey)
 	testutil.RequireStatus(t, rr, http.StatusOK)
 	var payload struct {
 		Today struct {
@@ -302,11 +342,11 @@ func TestServerCompatMonitoringAnalytics(t *testing.T) {
 	unauthorizedRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":1778000000000,"to_ms":1778000060000}`, "")
 	testutil.RequireStatus(t, unauthorizedRR, http.StatusUnauthorized)
 
-	badRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":2,"to_ms":1}`, "management-key")
+	badRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", `{"from_ms":2,"to_ms":1}`, testutil.AdminKey)
 	testutil.RequireStatus(t, badRR, http.StatusBadRequest)
 
 	body := `{"from_ms":1778000000000,"to_ms":1778000060000,"include":{"summary":true,"events_page":{"limit":10},"recent_failures":5}}`
-	rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", body, "management-key")
+	rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/monitoring/analytics", body, testutil.AdminKey)
 	testutil.RequireStatus(t, rr, http.StatusOK)
 
 	var payload struct {
@@ -333,9 +373,9 @@ func TestServerCompatModelPricesAndAliases(t *testing.T) {
 	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
 	handler, _ := newCompatHandler(t, testutil.NewConfig(t), setup)
 
-	priceRR := testutil.Request(t, handler, http.MethodPut, "/v0/management/model-prices", `{"prices":{"gpt-test":{"prompt":1,"completion":2,"cache":0.5}}}`, "management-key")
+	priceRR := testutil.Request(t, handler, http.MethodPut, "/v0/management/model-prices", `{"prices":{"gpt-test":{"prompt":1,"completion":2,"cache":0.5}}}`, testutil.AdminKey)
 	testutil.RequireStatus(t, priceRR, http.StatusOK)
-	loadPriceRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/model-prices", "", "management-key")
+	loadPriceRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/model-prices", "", testutil.AdminKey)
 	testutil.RequireStatus(t, loadPriceRR, http.StatusOK)
 	if !strings.Contains(loadPriceRR.Body.String(), `"gpt-test"`) ||
 		!strings.Contains(loadPriceRR.Body.String(), `"prompt":1`) {
@@ -347,22 +387,22 @@ func TestServerCompatModelPricesAndAliases(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 	stubModelPriceSyncURLs(t, source.URL, "")
-	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/model-prices/sync", `{}`, "management-key")
+	syncRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/model-prices/sync", `{}`, testutil.AdminKey)
 	testutil.RequireStatus(t, syncRR, http.StatusBadGateway)
 	if !strings.Contains(syncRR.Body.String(), `"code":"model_price_sync_failed"`) {
 		t.Fatalf("sync error body = %s", syncRR.Body.String())
 	}
 
 	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	aliasRR := testutil.Request(t, handler, http.MethodPut, "/v0/management/api-key-aliases", `{"items":[{"apiKeyHash":"`+hash+`","alias":"Team A"}]}`, "management-key")
+	aliasRR := testutil.Request(t, handler, http.MethodPut, "/v0/management/api-key-aliases", `{"items":[{"apiKeyHash":"`+hash+`","alias":"Team A"}]}`, testutil.AdminKey)
 	testutil.RequireStatus(t, aliasRR, http.StatusOK)
-	loadAliasRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/api-key-aliases", "", "management-key")
+	loadAliasRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/api-key-aliases", "", testutil.AdminKey)
 	testutil.RequireStatus(t, loadAliasRR, http.StatusOK)
 	if !strings.Contains(loadAliasRR.Body.String(), `"apiKeyHash":"`+hash+`"`) ||
 		!strings.Contains(loadAliasRR.Body.String(), `"alias":"Team A"`) {
 		t.Fatalf("aliases body = %s", loadAliasRR.Body.String())
 	}
-	deleteAliasRR := testutil.Request(t, handler, http.MethodDelete, "/v0/management/api-key-aliases/"+hash, "", "management-key")
+	deleteAliasRR := testutil.Request(t, handler, http.MethodDelete, "/v0/management/api-key-aliases/"+hash, "", testutil.AdminKey)
 	testutil.RequireStatus(t, deleteAliasRR, http.StatusOK)
 }
 
@@ -371,7 +411,7 @@ func TestServerCompatProxyRoutes(t *testing.T) {
 	setup := &store.Setup{CPAUpstreamURL: cpa.URL(), ManagementKey: "management-key", Queue: "usage", PopSide: "right"}
 	handler, _ := newCompatHandler(t, testutil.NewConfig(t), setup)
 
-	accountsRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/accounts?limit=10", "", "management-key")
+	accountsRR := testutil.Request(t, handler, http.MethodGet, "/v0/management/accounts?limit=10", "", testutil.AdminKey)
 	testutil.RequireStatus(t, accountsRR, http.StatusOK)
 	accountsReq, ok := cpa.LastRequest("/v0/management/accounts")
 	if !ok {
@@ -381,7 +421,7 @@ func TestServerCompatProxyRoutes(t *testing.T) {
 		t.Fatalf("accounts proxy request = %#v", accountsReq)
 	}
 
-	reloadRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/reload", `{"force":true}`, "management-key")
+	reloadRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/reload", `{"force":true}`, testutil.AdminKey)
 	testutil.RequireStatus(t, reloadRR, http.StatusOK)
 	reloadReq, ok := cpa.LastRequest("/v0/management/reload")
 	if !ok {
@@ -389,6 +429,16 @@ func TestServerCompatProxyRoutes(t *testing.T) {
 	}
 	if reloadReq.Authorization != "Bearer management-key" || reloadReq.Body != `{"force":true}` {
 		t.Fatalf("reload proxy request = %#v", reloadReq)
+	}
+
+	configRR := testutil.Request(t, handler, http.MethodGet, "/config", "", testutil.AdminKey)
+	testutil.RequireStatus(t, configRR, http.StatusOK)
+	configReq, ok := cpa.LastRequest("/config")
+	if !ok {
+		t.Fatal("CPA mock did not receive /config")
+	}
+	if configReq.Authorization != "Bearer management-key" {
+		t.Fatalf("config proxy request = %#v", configReq)
 	}
 
 	modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models?limit=20", nil)

@@ -21,6 +21,14 @@ func New(managerConfigService *managerconfig.Service) *Service {
 }
 
 func (s *Service) ProxyManagement(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
+	s.proxyWithSavedManagementKey(w, r, writeError)
+}
+
+func (s *Service) ProxyCPA(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
+	s.proxyWithSavedManagementKey(w, r, writeError)
+}
+
+func (s *Service) proxyWithSavedManagementKey(w http.ResponseWriter, r *http.Request, writeError func(http.ResponseWriter, int, error)) {
 	setup, ok, err := s.resolveSetup(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -28,10 +36,6 @@ func (s *Service) ProxyManagement(w http.ResponseWriter, r *http.Request, writeE
 	}
 	if !ok {
 		writeError(w, http.StatusPreconditionRequired, errors.New("usage service is not configured"))
-		return
-	}
-	if !managerconfig.AuthHeaderMatches(r.Header.Get("Authorization"), setup.ManagementKey) {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid management key"))
 		return
 	}
 	target, err := url.Parse(setup.CPAUpstreamURL)
@@ -90,6 +94,69 @@ func (s *Service) ProxyModelList(w http.ResponseWriter, r *http.Request, writeEr
 func IsModelListPath(path string) bool {
 	cleaned := strings.TrimRight(path, "/")
 	return cleaned == "/v1/models" || cleaned == "/models"
+}
+
+func IsCPAProxyPath(path string) bool {
+	cleaned := strings.TrimRight(path, "/")
+	if cleaned == "" {
+		return false
+	}
+	if _, ok := exactCPAProxyPaths[cleaned]; ok {
+		return true
+	}
+	for _, prefix := range cpaProxyPathPrefixes {
+		if cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+var exactCPAProxyPaths = map[string]struct{}{
+	"/ampcode":                             {},
+	"/api-call":                            {},
+	"/api-key-usage":                       {},
+	"/api-keys":                            {},
+	"/anthropic-auth-url":                  {},
+	"/antigravity-auth-url":                {},
+	"/claude-api-key":                      {},
+	"/codex-api-key":                       {},
+	"/codex-auth-url":                      {},
+	"/config":                              {},
+	"/config.yaml":                         {},
+	"/debug":                               {},
+	"/force-model-prefix":                  {},
+	"/gemini-api-key":                      {},
+	"/gemini-cli-auth-url":                 {},
+	"/get-auth-status":                     {},
+	"/latest-version":                      {},
+	"/logging-to-file":                     {},
+	"/logs":                                {},
+	"/logs-max-total-size-mb":              {},
+	"/oauth-callback":                      {},
+	"/oauth-excluded-models":               {},
+	"/oauth-model-alias":                   {},
+	"/openai-compatibility":                {},
+	"/proxy-url":                           {},
+	"/quota-exceeded/switch-preview-model": {},
+	"/quota-exceeded/switch-project":       {},
+	"/request-error-logs":                  {},
+	"/request-log":                         {},
+	"/request-retry":                       {},
+	"/routing/strategy":                    {},
+	"/vertex-api-key":                      {},
+	"/vertex/import":                       {},
+	"/ws-auth":                             {},
+	"/xai-auth-url":                        {},
+}
+
+var cpaProxyPathPrefixes = []string{
+	"/ampcode/",
+	"/auth-files",
+	"/oauth-excluded-models/",
+	"/oauth-model-alias/",
+	"/request-error-logs",
+	"/request-log-by-id",
 }
 
 func (s *Service) resolveSetup(ctx context.Context) (store.Setup, bool, error) {

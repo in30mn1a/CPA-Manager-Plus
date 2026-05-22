@@ -16,6 +16,7 @@ import (
 type Request struct {
 	CPAUpstreamURL               string `json:"cpaBaseUrl"`
 	ManagementKey                string `json:"managementKey"`
+	CPAManagementKey             string `json:"cpaManagementKey"`
 	CollectorMode                string `json:"collectorMode"`
 	Queue                        string `json:"queue"`
 	PopSide                      string `json:"popSide"`
@@ -33,10 +34,16 @@ type Result struct {
 }
 
 type InfoResult struct {
-	Service    string `json:"service"`
-	Mode       string `json:"mode"`
-	StartedAt  int64  `json:"startedAt"`
-	Configured bool   `json:"configured"`
+	Service            string `json:"service"`
+	Mode               string `json:"mode"`
+	StartedAt          int64  `json:"startedAt"`
+	Configured          bool   `json:"configured"`
+	AdminReady          bool   `json:"adminReady"`
+	ProjectInitialized  bool   `json:"projectInitialized"`
+	SetupRequired       bool   `json:"setupRequired"`
+	MigrationStatus     string `json:"migrationStatus,omitempty"`
+	DataKeyReady        bool   `json:"dataKeyReady"`
+	HasHistoricalData   bool   `json:"hasHistoricalData"`
 }
 
 type Service struct {
@@ -64,17 +71,39 @@ func (s *Service) Info(ctx context.Context) (InfoResult, error) {
 	if err != nil {
 		return InfoResult{}, err
 	}
+	_, adminReady, err := s.store.LoadAdminCredential(ctx)
+	if err != nil {
+		return InfoResult{}, err
+	}
+	bootstrapState, bootstrapStateOK, err := s.store.LoadBootstrapState(ctx)
+	if err != nil {
+		return InfoResult{}, err
+	}
+	projectInitialized := ok && setup.CPAUpstreamURL != "" && setup.ManagementKey != ""
+	if bootstrapStateOK {
+		projectInitialized = bootstrapState.ProjectInitialized
+	}
 	return InfoResult{
-		Service:    s.serviceID,
-		Mode:       "embedded",
-		StartedAt:  s.startedAt,
-		Configured: ok && setup.CPAUpstreamURL != "" && setup.ManagementKey != "",
+		Service:            s.serviceID,
+		Mode:               "embedded",
+		StartedAt:          s.startedAt,
+		Configured:          projectInitialized,
+		AdminReady:          adminReady,
+		ProjectInitialized:  projectInitialized,
+		SetupRequired:       adminReady && !projectInitialized,
+		MigrationStatus:     bootstrapState.Status,
+		DataKeyReady:        bootstrapState.DataKeyReady,
+		HasHistoricalData:   bootstrapState.HasHistoricalData,
 	}, nil
 }
 
-func (s *Service) Setup(ctx context.Context, req Request, authorizationHeader string) (Result, error) {
+func (s *Service) Setup(ctx context.Context, req Request, _ string) (Result, error) {
 	req.CPAUpstreamURL = cpa.NormalizeBaseURL(req.CPAUpstreamURL)
-	req.ManagementKey = strings.TrimSpace(req.ManagementKey)
+	req.CPAManagementKey = strings.TrimSpace(req.CPAManagementKey)
+	if req.CPAManagementKey == "" {
+		req.CPAManagementKey = strings.TrimSpace(req.ManagementKey)
+	}
+	req.ManagementKey = req.CPAManagementKey
 	req.CollectorMode = managerconfig.CollectorMode(req.CollectorMode)
 	if req.Queue == "" {
 		req.Queue = s.cfg.Queue
@@ -95,9 +124,7 @@ func (s *Service) Setup(ctx context.Context, req Request, authorizationHeader st
 		return Result{}, err
 	} else if source == managerconfig.SourceEnv && setupDiffers(existing, req) {
 		return Result{}, errors.New("setup is managed by environment variables")
-	} else if ok && existing.ManagementKey != "" &&
-		!managerconfig.AuthHeaderMatches(authorizationHeader, existing.ManagementKey) &&
-		req.ManagementKey != existing.ManagementKey {
+	} else if ok && existing.ManagementKey != "" && req.ManagementKey != existing.ManagementKey {
 		if cpa.NormalizeBaseURL(existing.CPAUpstreamURL) != req.CPAUpstreamURL {
 			return Result{}, errors.New("invalid management key for existing setup")
 		}

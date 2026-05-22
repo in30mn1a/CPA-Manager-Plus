@@ -36,6 +36,7 @@ func newTestHandler(t *testing.T, upstreamURL string, saveSetup bool) http.Handl
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	testutil.EnsureAdminCredential(t, db)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
@@ -69,6 +70,7 @@ func newTestHandlerWithConfig(t *testing.T, cfg config.Config) http.Handler {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	testutil.EnsureAdminCredential(t, db)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
@@ -229,7 +231,7 @@ func postUsageImport(t *testing.T, handler http.Handler, payload string) struct 
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/usage/import", strings.NewReader(payload))
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -333,6 +335,7 @@ func TestSetupAllowsKeyRotationForSameUpstreamWithValidNewKey(t *testing.T) {
 		"/setup",
 		bytes.NewBufferString(`{"cpaBaseUrl":"`+upstream.URL+`","managementKey":"rotated-key"}`),
 	)
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -349,7 +352,7 @@ func TestSetupAllowsKeyRotationForSameUpstreamWithValidNewKey(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/status", nil)
-	req.Header.Set("Authorization", "Bearer rotated-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -380,6 +383,7 @@ func TestSetupRejectsKeyRotationWhenSetupIsEnvironmentManaged(t *testing.T) {
 		"/setup",
 		bytes.NewBufferString(`{"cpaBaseUrl":"`+upstream.URL+`","managementKey":"rotated-key"}`),
 	)
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -406,7 +410,7 @@ func TestManagerConfigRejectsPollIntervalAboveRetention(t *testing.T) {
 	handler := newTestHandler(t, upstream.URL, true)
 	body := bytes.NewBufferString(`{"config":{"cpaConnection":{"cpaBaseUrl":"` + upstream.URL + `","managementKey":"management-key"},"collector":{"collectorMode":"auto","queue":"usage","popSide":"right","batchSize":100,"pollIntervalMs":2000,"queryLimit":50000},"externalUsageService":{"enabled":true,"serviceBase":"http://usage.test"}}}`)
 	req := httptest.NewRequest(http.MethodPut, "/usage-service/config", body)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -435,7 +439,7 @@ func TestManagerConfigReadsLegacySetup(t *testing.T) {
 
 	handler := newTestHandler(t, upstream.URL, true)
 	req := httptest.NewRequest(http.MethodGet, "/usage-service/config", nil)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -477,6 +481,7 @@ func TestSetupCanDisableRequestMonitoring(t *testing.T) {
 	handler := newTestHandler(t, upstream.URL, false)
 	body := bytes.NewBufferString(`{"cpaBaseUrl":"` + upstream.URL + `","managementKey":"management-key","requestMonitoringEnabled":false,"ensureUsageStatisticsEnabled":false}`)
 	req := httptest.NewRequest(http.MethodPost, "/setup", body)
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -492,7 +497,7 @@ func TestSetupCanDisableRequestMonitoring(t *testing.T) {
 	}
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/status", nil)
-	statusReq.Header.Set("Authorization", "Bearer management-key")
+	statusReq.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	statusRR := httptest.NewRecorder()
 	handler.ServeHTTP(statusRR, statusReq)
 
@@ -504,7 +509,7 @@ func TestSetupCanDisableRequestMonitoring(t *testing.T) {
 	}
 
 	configReq := httptest.NewRequest(http.MethodGet, "/usage-service/config", nil)
-	configReq.Header.Set("Authorization", "Bearer management-key")
+	configReq.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	configRR := httptest.NewRecorder()
 	handler.ServeHTTP(configRR, configReq)
 
@@ -520,7 +525,7 @@ func TestModelPricesSaveAndLoad(t *testing.T) {
 	handler := newTestHandler(t, "http://example.test", true)
 	body := bytes.NewBufferString(`{"prices":{"gpt-test":{"prompt":1.25,"completion":2.5,"cache":0.1}}}`)
 	req := httptest.NewRequest(http.MethodPut, "/v0/management/model-prices", body)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -530,7 +535,7 @@ func TestModelPricesSaveAndLoad(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v0/management/model-prices", nil)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -561,7 +566,7 @@ func TestAPIKeyAliasesSaveLoadAndDelete(t *testing.T) {
 	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	body := bytes.NewBufferString(`{"items":[{"apiKeyHash":"` + hash + `","alias":"Team A"}]}`)
 	req := httptest.NewRequest(http.MethodPut, "/v0/management/api-key-aliases", body)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -571,7 +576,7 @@ func TestAPIKeyAliasesSaveLoadAndDelete(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v0/management/api-key-aliases", nil)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -601,7 +606,7 @@ func TestAPIKeyAliasesSaveLoadAndDelete(t *testing.T) {
 		"/v0/management/api-key-aliases",
 		bytes.NewBufferString(`{"items":[{"apiKeyHash":"`+otherHash+`","alias":" team a "}]}`),
 	)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -613,7 +618,7 @@ func TestAPIKeyAliasesSaveLoadAndDelete(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/v0/management/api-key-aliases/"+hash, nil)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -663,7 +668,7 @@ func TestModelPricesSyncFromLiteLLMFormat(t *testing.T) {
 		"/v0/management/model-prices/sync",
 		bytes.NewBufferString(`{"models":["gpt-test","openrouter/gpt-router"]}`),
 	)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -742,7 +747,7 @@ func TestModelPricesSyncUsesCPAProxyURL(t *testing.T) {
 		"/v0/management/model-prices/sync",
 		bytes.NewBufferString(`{"models":["gpt-proxy"]}`),
 	)
-	req.Header.Set("Authorization", "Bearer management-key")
+	req.Header.Set("Authorization", "Bearer "+testutil.AdminKey)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)

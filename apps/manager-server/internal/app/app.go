@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"io/fs"
+	"path/filepath"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
+	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -19,9 +22,24 @@ type Options struct {
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (*Context, error) {
-	_ = ctx
-	st, err := store.Open(cfg.DBPath)
+	if cfg.DataKey == "" && cfg.DataKeyPath == "" {
+		cfg.DataKeyPath = filepath.Join(filepath.Dir(cfg.DBPath), "data.key")
+	}
+	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
 	if err != nil {
+		return nil, err
+	}
+	protector, err := security.NewProtector(dataKey)
+	if err != nil {
+		return nil, err
+	}
+	st, err := store.Open(cfg.DBPath, protector)
+	if err != nil {
+		return nil, err
+	}
+	bootstrapResult, err := bootstrapsvc.Run(ctx, cfg, st, dataKeyCreated)
+	if err != nil {
+		_ = st.Close()
 		return nil, err
 	}
 	manager := collector.NewManager(cfg, st)
@@ -33,7 +51,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (*Context, err
 	if startedAt <= 0 {
 		startedAt = time.Now().UnixMilli()
 	}
-	return FromExisting(
+	appCtx := FromExisting(
 		cfg,
 		st,
 		manager,
@@ -42,5 +60,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (*Context, err
 		options.ModelPriceSyncURL,
 		options.OpenRouterModelPriceSyncURL,
 		serviceID,
-	), nil
+	)
+	appCtx.Bootstrap = bootstrapResult
+	return appCtx, nil
 }

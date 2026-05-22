@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/middleware"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/http/response"
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
 )
@@ -16,6 +17,9 @@ type Handler struct {
 func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.MethodNotAllowed(w)
+		return
+	}
+	if !middleware.AuthorizeAdmin(w, r, h.App.AdminAuthService) {
 		return
 	}
 	var req setupsvc.Request

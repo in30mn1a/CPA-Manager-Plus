@@ -30,7 +30,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		response.MethodNotAllowed(w)
 		return
 	}
-	if !middleware.AuthorizeIfConfigured(w, r, h.App.ManagerConfigService) {
+	if !middleware.AuthorizePanel(w, r, h.App.AdminAuthService) {
 		return
 	}
 	events, deadLetters, err := h.App.UsageService.Counts(r.Context())

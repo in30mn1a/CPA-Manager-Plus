@@ -17,7 +17,7 @@ type Handler struct {
 }
 
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
-	if !middleware.AuthorizeIfConfigured(w, r, h.App.ManagerConfigService) {
+	if !middleware.AuthorizePanel(w, r, h.App.AdminAuthService) {
 		return
 	}
 

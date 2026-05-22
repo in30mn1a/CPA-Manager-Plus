@@ -80,6 +80,15 @@ func (m *CPAMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	switch {
+	case r.URL.Path == "/config" && r.Method == http.MethodGet:
+		if !m.hasManagementAuth(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"debug": false,
+			"raw":   map[string]any{},
+		})
 	case r.URL.Path == "/v0/management/config" && r.Method == http.MethodGet:
 		if !m.hasManagementAuth(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)

@@ -71,6 +71,8 @@ func UsageServiceErrorCode(err error) string {
 		return "setup_env_managed"
 	case strings.Contains(message, "invalid management key for existing setup"):
 		return "invalid_existing_management_key"
+	case strings.Contains(message, "invalid admin key"):
+		return "invalid_admin_key"
 	case strings.Contains(message, "invalid management key"):
 		return "invalid_management_key"
 	case strings.Contains(message, "usage service is not configured"):

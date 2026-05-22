@@ -15,12 +15,18 @@ const configEnvKey = "CPA_MANAGER_CONFIG"
 const defaultConfigName = "config.json"
 
 const defaultSecretFile = "/run/secrets/cpa_management_key"
+const defaultAdminSecretFile = "/run/secrets/cpa_admin_key"
+const defaultDataKeySecretFile = "/run/secrets/cpa_data_key"
 
 type Config struct {
 	HTTPAddr       string
+	DataDir        string
 	DBPath         string
 	CPAUpstreamURL string
 	ManagementKey  string
+	AdminKey       string
+	DataKey        string
+	DataKeyPath    string
 	CollectorMode  string
 	Queue          string
 	PopSide        string
@@ -38,6 +44,9 @@ type fileConfig struct {
 	DBPath            string   `json:"dbPath,omitempty"`
 	CPAUpstreamURL    string   `json:"cpaUpstreamUrl,omitempty"`
 	ManagementKeyFile string   `json:"managementKeyFile,omitempty"`
+	AdminKeyFile      string   `json:"adminKeyFile,omitempty"`
+	DataKeyFile       string   `json:"dataKeyFile,omitempty"`
+	DataKeyPath       string   `json:"dataKeyPath,omitempty"`
 	CollectorMode     string   `json:"collectorMode,omitempty"`
 	Queue             string   `json:"queue,omitempty"`
 	PopSide           string   `json:"popSide,omitempty"`
@@ -73,11 +82,29 @@ func Load() (Config, error) {
 		managementKeyFile = resolveConfigPath(cfgFile.ManagementKeyFile, cfgDir)
 	}
 
+	adminKeyFile := defaultAdminSecretFile
+	if cfgFile.AdminKeyFile != "" {
+		adminKeyFile = resolveConfigPath(cfgFile.AdminKeyFile, cfgDir)
+	}
+
+	dataKeyFile := defaultDataKeySecretFile
+	if cfgFile.DataKeyFile != "" {
+		dataKeyFile = resolveConfigPath(cfgFile.DataKeyFile, cfgDir)
+	}
+	dataKeyPath := resolveConfigPath(cfgFile.DataKeyPath, cfgDir)
+	if dataKeyPath == "" {
+		dataKeyPath = filepath.Join(dataDir, "data.key")
+	}
+
 	return Config{
 		HTTPAddr:       env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
+		DataDir:        dataDir,
 		DBPath:         env("USAGE_DB_PATH", dbPathFallback),
 		CPAUpstreamURL: env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
 		ManagementKey:  readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
+		AdminKey:       readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
+		DataKey:        readSecret("CPA_MANAGER_DATA_KEY", "CPA_MANAGER_DATA_KEY_FILE", dataKeyFile),
+		DataKeyPath:    env("CPA_MANAGER_DATA_KEY_PATH", dataKeyPath),
 		CollectorMode:  normalizeCollectorMode(env("USAGE_COLLECTOR_MODE", stringFallback(cfgFile.CollectorMode, "auto"))),
 		Queue:          env("USAGE_RESP_QUEUE", stringFallback(cfgFile.Queue, "usage")),
 		PopSide:        env("USAGE_RESP_POP_SIDE", stringFallback(cfgFile.PopSide, "right")),
