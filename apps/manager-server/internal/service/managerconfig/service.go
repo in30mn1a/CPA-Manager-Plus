@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	collectorservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpa"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -65,6 +66,9 @@ func (s *Service) Get(ctx context.Context) (Response, error) {
 func (s *Service) Update(ctx context.Context, submitted store.ManagerConfig) (Response, error) {
 	current, source, _, err := s.ResolveManagerConfigWithSource(ctx)
 	if err != nil {
+		return Response{}, err
+	}
+	if err := model.ValidateCodexInspectionConfig(submitted.CodexInspection); err != nil {
 		return Response{}, err
 	}
 	next := s.MergeSubmittedManagerConfig(current, submitted)

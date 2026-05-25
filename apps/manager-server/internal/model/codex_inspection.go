@@ -199,6 +199,25 @@ func NormalizeCodexInspectionTimeZone(value string, fallback string) string {
 	return trimmed
 }
 
+func ValidateCodexInspectionConfig(input ManagerCodexInspectionConfig) error {
+	return ValidateCodexInspectionSchedule(input.Schedule)
+}
+
+func ValidateCodexInspectionSchedule(input ManagerCodexInspectionScheduleConfig) error {
+	return ValidateCodexInspectionTimeZone(input.TimeZone)
+}
+
+func ValidateCodexInspectionTimeZone(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if _, err := time.LoadLocation(trimmed); err != nil {
+		return fmt.Errorf("invalid time zone %q: %w", trimmed, err)
+	}
+	return nil
+}
+
 // ResolveCodexInspectionLocation returns the time.Location for the schedule.
 // An empty or invalid time zone resolves to time.Local so existing deployments
 // keep using the server's local time.

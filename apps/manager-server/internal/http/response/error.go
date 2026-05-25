@@ -23,7 +23,8 @@ func SetupErrorStatus(err error) int {
 		return http.StatusUnauthorized
 	case strings.Contains(message, "cpaBaseUrl and managementKey are required"),
 		strings.Contains(message, "CPA redis-usage-queue-retention-seconds"),
-		strings.Contains(message, "pollIntervalMs must be less than or equal"):
+		strings.Contains(message, "pollIntervalMs must be less than or equal"),
+		strings.Contains(message, "invalid time zone"):
 		return http.StatusBadRequest
 	case strings.Contains(message, "management API validation failed"),
 		strings.Contains(message, "enable CPA usage statistics failed"):
@@ -40,7 +41,8 @@ func ManagerConfigErrorStatus(err error) int {
 		return http.StatusConflict
 	case strings.Contains(message, "cpaBaseUrl and managementKey are required"),
 		strings.Contains(message, "CPA redis-usage-queue-retention-seconds"),
-		strings.Contains(message, "pollIntervalMs must be less than or equal"):
+		strings.Contains(message, "pollIntervalMs must be less than or equal"),
+		strings.Contains(message, "invalid time zone"):
 		return http.StatusBadRequest
 	case strings.Contains(message, "management API validation failed"),
 		strings.Contains(message, "management API config request failed"),
@@ -81,6 +83,8 @@ func UsageServiceErrorCode(err error) string {
 		return "cpa_usage_retention_invalid"
 	case strings.Contains(message, "pollIntervalMs must be less than or equal"):
 		return "poll_interval_exceeds_retention"
+	case strings.Contains(message, "invalid time zone"):
+		return "invalid_time_zone"
 	case strings.Contains(message, "management API validation failed"):
 		return "management_api_validation_failed"
 	case strings.Contains(message, "management API config request failed"):

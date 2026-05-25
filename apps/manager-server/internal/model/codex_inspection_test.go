@@ -28,6 +28,30 @@ func TestNormalizeCodexInspectionTimeZone(t *testing.T) {
 	}
 }
 
+func TestValidateCodexInspectionTimeZone(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"empty uses server default", "", false},
+		{"valid IANA", "Asia/Shanghai", false},
+		{"whitespace is trimmed", "  Europe/Berlin  ", false},
+		{"invalid is rejected", "Mars/Olympus", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateCodexInspectionTimeZone(c.value)
+			if c.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestResolveCodexInspectionLocation(t *testing.T) {
 	if loc := ResolveCodexInspectionLocation(""); loc != time.Local {
 		t.Fatalf("empty timezone should resolve to time.Local, got %v", loc)
