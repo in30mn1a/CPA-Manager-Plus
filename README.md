@@ -6,17 +6,17 @@ A single-file Web UI for **CLI Proxy API (CPA)** plus a **Manager Server** for p
 
 Since v6.10.0, CPA no longer includes built-in usage statistics. This project now supports usage analytics through a long-running Manager Server that consumes the CPA usage queue, persists request events to SQLite, and exposes panel-compatible usage APIs.
 
+CPA Manager Plus is the recommended successor to CPA-Manager. It combines the CPA management panel with a Docker-ready Manager Server, admin-key protected full-panel mode, encrypted CPA Management Key storage, server-backed analytics, model pricing, API key aliases, dashboard cards, and Codex account inspection.
+
 - **CPA Main project**: https://github.com/router-for-me/CLIProxyAPI
 - **Recommended CPA version**: >= v7.1.0
 - **Minimum CPA version for HTTP usage queue**: >= v6.10.8
 
 ## Panel Preview
 
-![Account overview table mode showing compact rows, expanded quota details, token structure, and model usage](img/screenshot-20260511-203755.png)
-![Account overview card mode showing health metrics, token usage, Codex quota, and model Top 2 details](img/screenshot-20260511-203905.png)
-![Account overview card grid showing multiple account health and token usage summaries](img/screenshot-20260511-203945.png)
-![Realtime monitoring table showing request status, latency, token usage, and cost](img/screenshot-20260509-105807.png)
-![Codex account inspection progress with live probe logs and cleanup recommendations](img/screenshot-20260509-113713.png)
+![Home dashboard showing traffic overview, collector status, usage metrics, health alerts, and version information](img/home.jpg)
+![Monitoring center showing usage analytics, realtime request events, account overview, API key breakdowns, and model cost statistics](img/monitoring.jpg)
+![Codex account inspection showing probe progress, account status, cleanup recommendations, and execution logs](img/codex-inspection.png)
 
 ## What This Provides
 
@@ -304,12 +304,15 @@ If `CPA_MANAGER_ADMIN_KEY` is set, the service initializes the admin credential 
 
 ### Migration Guide
 
-1. Back up the Manager Server data directory used by the old `/Users/seakee/WorkSpace/Node/CPA-Manager` project, especially `/data/usage.sqlite`. If it is a Docker volume, stop the old container first and back up the whole volume.
-2. Start CPA Manager Plus with the same `/data` volume. The new version keeps the old tables compatible and adds `settings.admin_credential_v1`, `settings.bootstrap_state_v1`, and `/data/data.key`.
-3. After upgrading, open **Configuration -> CPA Manager Plus Configuration** and verify the CPA URL, request monitoring switch, collection mode, and polling interval. Older stored configs without the switch are treated as monitoring enabled.
-4. If an older version already saved CPA URL and CPA Management Key through `/setup`, the service migrates from `settings.setup` to `settings.manager_config_v1` and rewrites the old plaintext CPA Management Key as encrypted storage during startup migration.
-5. If you use `CPA_UPSTREAM_URL` / `CPA_MANAGEMENT_KEY`, the connection remains environment-managed. To switch to panel persistence, remove those environment variables, restart, and save from the panel.
-6. In CPA panel mode, the browser still needs the Manager Server URL before it can read that service's SQLite configuration. Once entered, the value is saved to SQLite and kept in local storage as bootstrap data.
+When upgrading from the old CPA-Manager project, read [Migration from CPA-Manager](docs/migration-from-cpa-manager.md) first. The core rules are:
+
+1. Stop the old backend service before backup, then back up the old `/data` directory or Docker volume, including at least `usage.sqlite`, `usage.sqlite-wal`, and `usage.sqlite-shm`.
+2. Start CPA Manager Plus with the same old `/data` volume, or copy the old data into the new `/data`. The old project often used `cpa-manager-data`; the Plus examples use `cpa-manager-plus-data`. Do not accidentally start with an empty new volume.
+3. On first Plus startup, the service adds `settings.admin_credential_v1`, `settings.bootstrap_state_v1`, and `/data/data.key`. From this point forward, backups must include both SQLite files and `data.key`.
+4. Full Docker mode now logs in with the Manager Server admin key, not the CPA Management Key. Prefer setting `CPA_MANAGER_ADMIN_KEY` or `CPA_MANAGER_ADMIN_KEY_FILE` during migration; otherwise save the generated `cmp_admin_...` value from the first startup log.
+5. If an older version already saved CPA URL and CPA Management Key through `/setup`, the service migrates from `settings.setup` to `settings.manager_config_v1` and rewrites the old plaintext CPA Management Key as encrypted storage during startup migration.
+6. If you use `CPA_UPSTREAM_URL` / `CPA_MANAGEMENT_KEY`, the connection remains environment-managed. To switch to panel persistence, remove those environment variables, restart, and save from the panel.
+7. In CPA panel mode, the browser still needs the Manager Server URL before it can read that service's SQLite configuration. Once entered, the value is saved to SQLite and kept in local storage as bootstrap data.
 
 ## Data and Security Notes
 
@@ -406,12 +409,16 @@ go run ./cmd/cpa-manager-plus
 - **Docker panel shows stale data**: check `/status` for `lastConsumedAt`, `lastInsertedAt`, and `lastError`.
 - **CPA panel mode has CORS errors**: set `USAGE_CORS_ORIGINS` to the CPA panel origin or keep the default `*` for private deployments.
 - **Data disappears after container rebuild**: mount `/data` to a Docker volume or host directory.
+- **Old data is missing after migrating from CPA-Manager**: verify that the Plus container is mounting the old `/data` volume, not a newly created empty `cpa-manager-plus-data` volume.
+- **Admin key is lost**: setting `CPA_MANAGER_ADMIN_KEY` does not overwrite an existing `settings.admin_credential_v1`. Follow the offline recovery steps in the migration guide after backing up `/data`.
 - **Detailed FAQ**: see [FAQ and Troubleshooting](https://github.com/seakee/CPA-Manager-Plus/wiki/CPA-Manager-Plus-FAQ-and-Troubleshooting) or the [Chinese FAQ](https://github.com/seakee/CPA-Manager-Plus/wiki/CPA%E2%80%90Manager-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E4%B8%8E%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88).
 
 ## References
 
 - CLIProxyAPI: https://github.com/router-for-me/CLIProxyAPI
 - Redis usage queue documentation: https://help.router-for.me/management/redis-usage-queue.html
+- Migration from CPA-Manager: [docs/migration-from-cpa-manager.md](docs/migration-from-cpa-manager.md)
+- Release checklist: [docs/release-checklist.md](docs/release-checklist.md)
 
 ## Acknowledgements
 

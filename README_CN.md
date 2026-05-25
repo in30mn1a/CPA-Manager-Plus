@@ -6,17 +6,17 @@
 
 CPA 自 v6.10.0 起不再内置用量统计。当前方案通过常驻 Manager Server 消费 CPA 的用量队列，把请求级事件写入 SQLite，并向面板提供兼容的用量查询接口。
 
+CPA Manager Plus 是 CPA-Manager 的推荐后续版本。它把 CPA 管理面板与可 Docker 部署的 Manager Server 组合在一起，提供管理员密钥保护的完整面板模式、加密保存 CPA Management Key、服务端统计分析、模型价格、API Key 别名、仪表盘卡片和 Codex 账号巡检。
+
 - **CPA 主项目**: https://github.com/router-for-me/CLIProxyAPI
 - **推荐 CPA 版本**: >= v7.1.0
 - **HTTP 用量队列最低 CPA 版本**: >= v6.10.8
 
 ## 面板预览
 
-![账号汇总表格模式，展示紧凑行、展开后的额度详情、Token 结构和模型使用情况](img/screenshot-20260511-203755.png)
-![账号汇总卡片模式，展示健康指标、Token 使用、Codex 额度和模型 Top 2 明细](img/screenshot-20260511-203905.png)
-![账号汇总卡片网格，展示多个账号的健康状态和 Token 使用摘要](img/screenshot-20260511-203945.png)
-![实时监控表，展示请求状态、延迟、Token 用量和费用](img/screenshot-20260509-105807.png)
-![Codex 账号巡检进度，展示实时探测日志和清理建议](img/screenshot-20260509-113713.png)
+![首页仪表盘，展示流量概览、采集器状态、用量指标、健康提醒和版本信息](img/home.jpg)
+![监控中心，展示用量分析、实时请求事件、账号汇总、API Key 拆解和模型费用统计](img/monitoring.jpg)
+![Codex 账号巡检，展示探测进度、账号状态、清理建议和执行日志](img/codex-inspection.png)
 
 ## 提供什么
 
@@ -304,12 +304,15 @@ docker compose -f docker-compose.manager.yml up --build
 
 ### 迁移指引
 
-1. 备份旧项目 `/Users/seakee/WorkSpace/Node/CPA-Manager` 对应的 Manager Server 数据目录，尤其是 `/data/usage.sqlite`。如果是 Docker volume，先停止旧容器再备份整个 volume。
-2. 使用同一个 `/data` volume 启动 CPA Manager Plus。新版会保留旧表结构并新增 `settings.admin_credential_v1`、`settings.bootstrap_state_v1` 和 `/data/data.key`。
-3. 升级后首次打开面板，进入「配置面板 -> CPA Manager Plus 配置」检查 CPA 地址、请求监控开关、采集模式和轮询间隔。旧数据缺少请求监控开关时按已启用处理。
-4. 如果旧版本已经通过 `/setup` 保存过 CPA 地址和 CPA Management Key，服务会从 `settings.setup` 自动生成新的 `settings.manager_config_v1` 视图，并在启动迁移时把旧明文 CPA Management Key 改写为加密存储。
-5. 如果使用环境变量 `CPA_UPSTREAM_URL` / `CPA_MANAGEMENT_KEY`，连接配置仍由环境变量管理；要改为面板持久化，请移除环境变量后重启，再在面板保存。
-6. CPA 托管面板模式下，浏览器仍需要先知道 Manager Server 地址才能读取其数据库配置；首次填写后会同步写入 SQLite，并继续保留本地缓存作为 bootstrap。
+从旧 CPA-Manager 升级时，请优先阅读 [CPA-Manager 到 CPA Manager Plus 迁移指南](docs/migration-from-cpa-manager.zh-CN.md)。核心规则如下：
+
+1. 先停止旧后端服务，再备份旧 `/data` 目录或 Docker volume，至少包含 `usage.sqlite`、`usage.sqlite-wal`、`usage.sqlite-shm`。
+2. 使用同一个旧 `/data` volume 启动 CPA Manager Plus，或把旧数据复制到新 `/data`。旧项目默认 volume 常见为 `cpa-manager-data`，Plus 示例默认是 `cpa-manager-plus-data`，不要误用空的新 volume。
+3. 首次启动 Plus 后会新增 `settings.admin_credential_v1`、`settings.bootstrap_state_v1` 和 `/data/data.key`。从这一步开始，备份必须同时包含 SQLite 文件和 `data.key`。
+4. 完整 Docker 方案的登录凭证会变成 Manager Server 管理员密钥，不再是 CPA Management Key。建议发布/迁移时显式设置 `CPA_MANAGER_ADMIN_KEY` 或 `CPA_MANAGER_ADMIN_KEY_FILE`，否则务必保存首次启动日志里的 `cmp_admin_...`。
+5. 如果旧版本已经通过 `/setup` 保存过 CPA 地址和 CPA Management Key，服务会从 `settings.setup` 自动生成新的 `settings.manager_config_v1`，并在启动迁移时把旧明文 CPA Management Key 改写为加密存储。
+6. 如果使用环境变量 `CPA_UPSTREAM_URL` / `CPA_MANAGEMENT_KEY`，连接配置仍由环境变量管理；要改为面板持久化，请移除环境变量后重启，再在面板保存。
+7. CPA 托管面板模式下，浏览器仍需要先知道 Manager Server 地址才能读取其数据库配置；首次填写后会同步写入 SQLite，并继续保留本地缓存作为 bootstrap。
 
 ## 数据与安全说明
 
@@ -406,12 +409,16 @@ go run ./cmd/cpa-manager-plus
 - **Docker 面板数据不更新**：检查 `/status` 中的 `lastConsumedAt`、`lastInsertedAt`、`lastError`。
 - **CPA 控制面板方案有 CORS 错误**：将 `USAGE_CORS_ORIGINS` 设置为 CPA 面板来源；私有部署可保持默认 `*`。
 - **容器重建后数据丢失**：确认 `/data` 已挂载到 Docker volume 或宿主机目录。
+- **从 CPA-Manager 迁移后看不到旧数据**：确认 Plus 容器挂载的是旧 `/data` volume，而不是新建的 `cpa-manager-plus-data` 空 volume。
+- **管理员密钥丢失**：已有 `settings.admin_credential_v1` 时，单独设置 `CPA_MANAGER_ADMIN_KEY` 不会覆盖旧凭证。按迁移指南的离线恢复步骤处理，并先备份 `/data`。
 - **完整 FAQ**：查看 [CPA Manager Plus 常见问题与解决方案](https://github.com/seakee/CPA-Manager-Plus/wiki/CPA%E2%80%90Manager-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E4%B8%8E%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88) 或 [English FAQ and Troubleshooting](https://github.com/seakee/CPA-Manager-Plus/wiki/CPA-Manager-Plus-FAQ-and-Troubleshooting)。
 
 ## 参考
 
 - CLIProxyAPI: https://github.com/router-for-me/CLIProxyAPI
 - Redis 用量队列文档: https://help.router-for.me/management/redis-usage-queue.html
+- CPA-Manager 到 CPA Manager Plus 迁移指南: [docs/migration-from-cpa-manager.zh-CN.md](docs/migration-from-cpa-manager.zh-CN.md)
+- 发布前检查清单: [docs/release-checklist.zh-CN.md](docs/release-checklist.zh-CN.md)
 
 ## 致谢
 

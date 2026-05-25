@@ -1,5 +1,5 @@
 name: Deployment / Configuration Help
-description: Docker, Usage Service, networking, reverse proxy, and Windows deployment questions
+description: Docker, Manager Server, networking, reverse proxy, and Windows deployment questions
 title: "[Deploy]: "
 labels: ["deployment", "needs-triage"]
 
@@ -25,7 +25,7 @@ body:
       options:
         - CPA panel repository URL only
         - Full Docker setup
-        - CPA control panel + external Usage Service
+        - CPA control panel + external Manager Server
         - Not sure
     validations:
       required: true
@@ -48,9 +48,9 @@ body:
       required: true
 
   - type: input
-    id: usage-url
+    id: manager-url
     attributes:
-      label: Usage Service URL
+      label: Manager Server URL
       placeholder: http://127.0.0.1:18317
     validations:
       required: false
