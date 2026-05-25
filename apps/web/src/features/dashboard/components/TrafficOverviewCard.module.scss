@@ -340,17 +340,21 @@
 // 3. Doughnut
 .doughnutSection {
   position: relative;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
   flex: 1;
   min-height: 0;
   padding: 0;
+  gap: 10px;
 }
 
 .doughnutChart {
-  width: min(100%, 260px);
+  width: min(100%, 210px);
   aspect-ratio: 1;
   position: relative;
+  align-self: center;
 
   svg {
     width: 100%;
@@ -465,6 +469,87 @@
   place-items: center;
   color: var(--text-tertiary);
   font-size: 12px;
+}
+
+.tokenBreakdownList {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tokenBreakdownRow {
+  appearance: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  outline: none;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--app-border);
+    background: color-mix(in srgb, var(--app-surface-muted), transparent 35%);
+  }
+}
+
+.tokenBreakdownRowActive {
+  border-color: var(--app-border);
+  background: color-mix(in srgb, var(--app-surface-muted), transparent 35%);
+}
+
+.tokenBreakdownLeft {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.tokenBreakdownSwatch {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.tokenBreakdownValue {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tokenBreakdownShare {
+  min-width: 42px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 @media (max-width: 480px) {

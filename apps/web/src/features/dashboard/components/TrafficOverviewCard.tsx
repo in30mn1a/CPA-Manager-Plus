@@ -13,6 +13,7 @@ interface TrafficOverviewCardProps {
   timeline: DashboardTrafficPoint[];
   todayRequestHealthTimeline: DashboardTodayRequestHealthTimeline | null;
   tokenMix: DashboardTokenMixSegment[];
+  totalTokens?: number;
   loading: boolean;
 }
 
@@ -75,12 +76,15 @@ export function TrafficOverviewCard({
   timeline,
   todayRequestHealthTimeline,
   tokenMix,
+  totalTokens: todayTotalTokens,
   loading,
 }: TrafficOverviewCardProps) {
   const { t, i18n } = useTranslation();
   const [activeTokenSegment, setActiveTokenSegment] = useState<DashboardTokenMixSegment | null>(null);
   const hasData = timeline.some((point) => point.calls > 0 || point.tokens > 0);
-  const totalTokens = tokenMix.reduce((acc, s) => acc + s.tokens, 0);
+  const tokenMixTotal = tokenMix.reduce((acc, s) => acc + s.tokens, 0);
+  const displayTotalTokens = todayTotalTokens ?? tokenMixTotal;
+  const hasTokenMixData = tokenMix.some((segment) => segment.tokens > 0);
   const tokenPolyline = timeline
     .map((point, index) => {
       const x = timeline.length <= 1 ? 50 : (index / (timeline.length - 1)) * 100;
@@ -287,9 +291,9 @@ export function TrafficOverviewCard({
             </svg>
             <div className={styles.doughnutCenter}>
               <span className={styles.centerLabel}>{t('dashboard.total_tokens')}</span>
-              <span className={styles.centerValue}>{formatCompactNumber(totalTokens)}</span>
+              <span className={styles.centerValue}>{formatCompactNumber(displayTotalTokens)}</span>
             </div>
-            {tokenMix.length === 0 ? (
+            {!hasTokenMixData ? (
               <div className={styles.tokenEmptyState}>
                 {loading ? '...' : t('dashboard.no_token_mix_data')}
               </div>
@@ -304,6 +308,33 @@ export function TrafficOverviewCard({
                 <span>{(activeTokenSegment.share * 100).toFixed(1)}%</span>
               </div>
             ) : null}
+          </div>
+          <div className={styles.tokenBreakdownList}>
+            {tokenMix.map((segment) => (
+              <button
+                type="button"
+                key={segment.key}
+                className={`${styles.tokenBreakdownRow} ${
+                  activeTokenSegment?.key === segment.key ? styles.tokenBreakdownRowActive : ''
+                }`}
+                onMouseEnter={() => setActiveTokenSegment(segment)}
+                onMouseLeave={() => setActiveTokenSegment(null)}
+                onFocus={() => setActiveTokenSegment(segment)}
+                onBlur={() => setActiveTokenSegment(null)}
+                aria-label={`${t(tokenLabelMap[segment.key] || segment.key)} ${formatCompactNumber(segment.tokens)} ${(segment.share * 100).toFixed(1)}%`}
+              >
+                <span className={styles.tokenBreakdownLeft}>
+                  <i
+                    className={styles.tokenBreakdownSwatch}
+                    style={{ background: tokenColorMap[segment.key] || '#ccc' }}
+                    aria-hidden="true"
+                  />
+                  <span>{t(tokenLabelMap[segment.key] || segment.key)}</span>
+                </span>
+                <span className={styles.tokenBreakdownValue}>{formatCompactNumber(segment.tokens)}</span>
+                <span className={styles.tokenBreakdownShare}>{(segment.share * 100).toFixed(1)}%</span>
+              </button>
+            ))}
           </div>
         </div>
       </section>

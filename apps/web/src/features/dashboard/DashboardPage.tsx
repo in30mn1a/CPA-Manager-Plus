@@ -498,6 +498,7 @@ export function DashboardPage() {
             timeline={usageSummary.trafficTimeline}
             todayRequestHealthTimeline={usageSummary.todayRequestHealthTimeline}
             tokenMix={usageSummary.tokenMix}
+            totalTokens={usageSummary.summary?.today.total_tokens}
             loading={usageSummary.loading}
           />
         </section>
