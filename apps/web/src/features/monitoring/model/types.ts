@@ -361,6 +361,8 @@ export interface UseMonitoringDataReturn {
   eventsHasMore: boolean;
   eventsLoadingMore: boolean;
   lastRefreshedAt: Date | null;
+  isTransitioningScope: boolean;
+  hasPresentationSnapshot: boolean;
   refreshMeta: (showLoading?: boolean) => Promise<void>;
   loadMoreEvents: () => void;
 }

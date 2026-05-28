@@ -73,12 +73,13 @@ export const buildAnalyticsFilters = (
   let authIndices: Set<string> | null = null;
   if (isActiveFilterValue(scopeFilters.account)) {
     const account = scopeFilters.account!.trim();
-    authIndices = addAuthIndexConstraint(
-      authIndices,
-      Array.from(authMetaMap.entries())
-        .filter(([, meta]) => meta.account === account)
-        .map(([authIndex]) => authIndex)
-    );
+    const accountAuthIndices = Array.from(authMetaMap.entries())
+      .filter(([, meta]) => meta.account === account)
+      .map(([authIndex]) => authIndex);
+    authIndices = addAuthIndexConstraint(authIndices, accountAuthIndices);
+    if (accountAuthIndices.length === 0) {
+      filters.accounts = [account];
+    }
   }
   if (isActiveFilterValue(scopeFilters.provider)) {
     const provider = scopeFilters.provider!.trim();

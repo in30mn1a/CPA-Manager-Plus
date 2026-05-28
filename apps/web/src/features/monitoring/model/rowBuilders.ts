@@ -7,6 +7,7 @@ import type {
   MonitoringCustomTimeRange,
   MonitoringEventRow,
   MonitoringRealtimeRow,
+  MonitoringScopeFilters,
   MonitoringSummary,
   MonitoringTimeRange,
 } from './types';
@@ -67,6 +68,72 @@ export const buildRangeFilteredRows = (
   });
 };
 
+const isActiveScopeFilterValue = (value: string | null | undefined) =>
+  Boolean(value && value.trim() && value !== 'all');
+
+const normalizeScopeValue = (value: string | null | undefined) =>
+  String(value || '')
+    .trim()
+    .toLowerCase();
+
+export const buildScopeFilteredRows = (
+  rows: MonitoringEventRow[],
+  scopeFilters?: MonitoringScopeFilters
+) => {
+  if (!scopeFilters) return rows;
+
+  const account = normalizeScopeValue(scopeFilters.account);
+  const provider = normalizeScopeValue(scopeFilters.provider);
+  const model = normalizeScopeValue(scopeFilters.model);
+  const channel = normalizeScopeValue(scopeFilters.channel);
+  const apiKeyHash = normalizeScopeValue(scopeFilters.apiKeyHash);
+  const status = scopeFilters.status;
+
+  return rows.filter((row) => {
+    if (isActiveScopeFilterValue(scopeFilters.account)) {
+      const rowAccountValues = [
+        row.account,
+        row.accountMasked,
+        row.authLabel,
+        row.source,
+        row.sourceMasked,
+        row.authIndex,
+      ].map(normalizeScopeValue);
+      if (!rowAccountValues.includes(account)) return false;
+    }
+
+    if (
+      isActiveScopeFilterValue(scopeFilters.provider) &&
+      normalizeScopeValue(row.provider) !== provider
+    ) {
+      return false;
+    }
+
+    if (isActiveScopeFilterValue(scopeFilters.model) && normalizeScopeValue(row.model) !== model) {
+      return false;
+    }
+
+    if (
+      isActiveScopeFilterValue(scopeFilters.channel) &&
+      normalizeScopeValue(row.channel) !== channel
+    ) {
+      return false;
+    }
+
+    if (
+      isActiveScopeFilterValue(scopeFilters.apiKeyHash) &&
+      normalizeScopeValue(row.apiKeyHash) !== apiKeyHash
+    ) {
+      return false;
+    }
+
+    if (status === 'failed' && !row.failed) return false;
+    if (status === 'success' && row.failed) return false;
+
+    return true;
+  });
+};
+
 const buildRecentPattern = (rows: MonitoringEventRow[], limit = 10) =>
   rows
     .slice()
@@ -84,10 +151,7 @@ export const buildMonitoringSummary = (rows: MonitoringEventRow[]): MonitoringSu
   const reasoningTokens = rows.reduce((sum, row) => sum + row.reasoningTokens, 0);
   const cachedTokens = rows.reduce((sum, row) => sum + row.cachedTokens, 0);
   const cacheReadTokens = rows.reduce((sum, row) => sum + (row.cacheReadTokens ?? 0), 0);
-  const cacheCreationTokens = rows.reduce(
-    (sum, row) => sum + (row.cacheCreationTokens ?? 0),
-    0
-  );
+  const cacheCreationTokens = rows.reduce((sum, row) => sum + (row.cacheCreationTokens ?? 0), 0);
   const totalTokens = rows.reduce((sum, row) => sum + row.totalTokens, 0);
   const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
 
@@ -358,8 +422,8 @@ export const buildApiKeyRows = (rows: MonitoringEventRow[]): MonitoringApiKeyRow
   rows.forEach((row) => {
     const hasKnownApiKey = Boolean(
       row.apiKeyHash ||
-        (row.apiKeyLabel && row.apiKeyLabel !== '-') ||
-        (row.apiKeyMasked && row.apiKeyMasked !== '-')
+      (row.apiKeyLabel && row.apiKeyLabel !== '-') ||
+      (row.apiKeyMasked && row.apiKeyMasked !== '-')
     );
     const apiKeyGroupKey = hasKnownApiKey
       ? row.apiKeyHash || row.apiKeyLabel || row.apiKeyMasked

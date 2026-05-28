@@ -449,6 +449,7 @@ export interface DashboardSummaryParams {
 
 export interface MonitoringAnalyticsFilters {
   models?: string[];
+  accounts?: string[];
   auth_indices?: string[];
   api_key_hashes?: string[];
   source_hashes?: string[];
