@@ -301,6 +301,8 @@ export function MonitoringCenterPage() {
     eventsHasMore,
     eventsLoadingMore,
     lastRefreshedAt: monitoringLastRefreshedAt,
+    isTransitioningScope: monitoringScopeTransitioning,
+    hasPresentationSnapshot: hasMonitoringPresentationSnapshot,
     refreshMeta,
     loadMoreEvents,
   } = useMonitoringData({
@@ -355,8 +357,10 @@ export function MonitoringCenterPage() {
         : requestMonitoringAvailability.reason === 'manager_mismatch'
           ? t('monitoring.request_monitoring_manager_mismatch_body')
           : t('monitoring.request_monitoring_not_configured_body');
+  const monitoringBlockingLoading =
+    monitoringLoading && (!monitoringScopeTransitioning || !hasMonitoringPresentationSnapshot);
   const overallLoading =
-    usageLoading || monitoringLoading || requestMonitoringAvailability.checking;
+    usageLoading || monitoringBlockingLoading || requestMonitoringAvailability.checking;
   const combinedError = monitoringUnavailable
     ? monitoringError
     : [usageError, monitoringError].filter(Boolean).join('；');
@@ -527,13 +531,21 @@ export function MonitoringCenterPage() {
         accountPageResetState
       )
     ) {
+      if (monitoringScopeTransitioning && hasMonitoringPresentationSnapshot) {
+        return;
+      }
       resetCurrentAccountPage();
       setApiKeyPage(1);
       setRealtimePage(1);
     }
 
     previousAccountPageResetStateRef.current = accountPageResetState;
-  }, [accountPageResetState, resetCurrentAccountPage]);
+  }, [
+    accountPageResetState,
+    hasMonitoringPresentationSnapshot,
+    monitoringScopeTransitioning,
+    resetCurrentAccountPage,
+  ]);
 
   useEffect(() => {
     if (
@@ -1150,7 +1162,11 @@ export function MonitoringCenterPage() {
   return (
     <div className={styles.page}>
       <MonitoringStatusHeader
-        showLoadingOverlay={overallLoading && filteredRows.length === 0}
+        showLoadingOverlay={
+          overallLoading &&
+          filteredRows.length === 0 &&
+          (!monitoringScopeTransitioning || !hasMonitoringPresentationSnapshot)
+        }
         monitoringUnavailable={monitoringUnavailable}
         monitoringUnavailableTitle={monitoringUnavailableTitle}
         monitoringUnavailableBody={monitoringUnavailableBody}

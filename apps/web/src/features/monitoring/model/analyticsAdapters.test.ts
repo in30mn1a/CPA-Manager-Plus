@@ -5,6 +5,7 @@ import type {
 } from '@/services/api/usageService';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
 import {
+  buildAnalyticsFilters,
   buildChannelRowsFromAnalytics,
   buildFailureRowsFromAnalytics,
   buildFailureSourceRowsFromAnalytics,
@@ -99,6 +100,55 @@ describe('buildUsageDetailsFromAnalyticsEvents', () => {
     expect(details[0].tokens.cached_tokens).toBe(5);
     expect(details[0].tokens.cache_read_tokens).toBe(4);
     expect(details[0].tokens.cache_creation_tokens).toBe(1);
+  });
+});
+
+describe('buildAnalyticsFilters', () => {
+  it('maps failed-only status and known accounts into backend filters', () => {
+    const filters = buildAnalyticsFilters(
+      {
+        account: 'alice@example.com',
+        status: 'failed',
+      },
+      new Map([
+        [
+          'auth-1',
+          {
+            authIndex: 'auth-1',
+            label: 'Alice',
+            account: 'alice@example.com',
+            provider: 'codex',
+            status: 'active',
+            disabled: false,
+            unavailable: false,
+            runtimeOnly: false,
+            planType: 'pro',
+            updatedAt: '',
+          },
+        ],
+      ]),
+      []
+    );
+
+    expect(filters).toMatchObject({
+      auth_indices: ['auth-1'],
+      failed_only: true,
+    });
+    expect(filters.accounts).toBeUndefined();
+  });
+
+  it('falls back to account snapshot filters when auth metadata cannot resolve an account', () => {
+    const filters = buildAnalyticsFilters(
+      {
+        account: 'legacy@example.com',
+      },
+      new Map(),
+      []
+    );
+
+    expect(filters).toEqual({
+      accounts: ['legacy@example.com'],
+    });
   });
 });
 

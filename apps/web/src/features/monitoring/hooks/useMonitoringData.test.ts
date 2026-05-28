@@ -5,9 +5,14 @@ import {
   buildApiKeyDisplayMap,
   buildMonitoringEventsScopeKey,
   buildMonitoringAuthMetaMap,
+  buildMonitoringSummary,
   buildRangeFilteredRows,
+  buildScopeFilteredRows,
   mergeMonitoringEventsPageItems,
+  resolveMonitoringDisplayEventItems,
+  resolveMonitoringPresentationSnapshot,
   type MonitoringEventRow,
+  type MonitoringPresentationSnapshot,
 } from './useMonitoringData';
 import type { MonitoringAnalyticsEventRow } from '@/services/api/usageService';
 import { sha256Hex } from '@/utils/apiKeyHash';
@@ -59,6 +64,26 @@ const createMonitoringEventRow = (
   taskKey: overrides.taskKey ?? 'task-1',
   searchText: overrides.searchText ?? 'amount myth resend',
 });
+
+const createPresentationSnapshot = (id: string): MonitoringPresentationSnapshot => {
+  const row = createMonitoringEventRow({ id });
+  return {
+    summary: buildMonitoringSummary([row]),
+    timeline: [{ label: id, requests: 1, tokens: row.totalTokens, cost: row.totalCost }],
+    timelineGranularity: 'hour',
+    hourlyDistribution: [],
+    modelShareRows: [],
+    channelRows: [],
+    modelRows: [],
+    failureSourceRows: [],
+    taskBuckets: [],
+    recentFailures: [],
+    filteredRows: [row],
+    eventsHasMore: id.includes('more'),
+    eventsLoadingMore: false,
+    lastRefreshedAt: new Date(1_768_759_000_000),
+  };
+};
 
 describe('buildAccountRows', () => {
   it('keeps raw auth indices for account-level auth file linking', () => {
@@ -212,6 +237,47 @@ describe('buildRangeFilteredRows', () => {
   });
 });
 
+describe('buildScopeFilteredRows', () => {
+  it('applies failed-only status filtering to realtime rows locally', () => {
+    const rows = [
+      createMonitoringEventRow({ id: 'success-row', failed: false }),
+      createMonitoringEventRow({ id: 'failed-row', failed: true }),
+    ];
+
+    expect(buildScopeFilteredRows(rows, { status: 'failed' }).map((row) => row.id)).toEqual([
+      'failed-row',
+    ]);
+  });
+
+  it('matches account focus against account and fallback display fields', () => {
+    const rows = [
+      createMonitoringEventRow({
+        id: 'alice-row',
+        account: 'alice@example.com',
+        authLabel: 'Alice Auth',
+      }),
+      createMonitoringEventRow({
+        id: 'legacy-row',
+        account: '',
+        authLabel: 'Legacy Auth',
+        source: 'legacy-source',
+      }),
+      createMonitoringEventRow({
+        id: 'bob-row',
+        account: 'bob@example.com',
+        authLabel: 'Bob Auth',
+      }),
+    ];
+
+    expect(
+      buildScopeFilteredRows(rows, { account: 'alice@example.com' }).map((row) => row.id)
+    ).toEqual(['alice-row']);
+    expect(buildScopeFilteredRows(rows, { account: 'Legacy Auth' }).map((row) => row.id)).toEqual([
+      'legacy-row',
+    ]);
+  });
+});
+
 describe('buildMonitoringEventsScopeKey', () => {
   it('keeps moving ranges stable when only the end time changes', () => {
     const first = buildMonitoringEventsScopeKey(
@@ -299,5 +365,145 @@ describe('mergeMonitoringEventsPageItems', () => {
     expect(
       mergeMonitoringEventsPageItems(previous, nextPage, null).map((item) => item.event_hash)
     ).toEqual(['event-3', 'event-2', 'event-1']);
+  });
+});
+
+describe('resolveMonitoringDisplayEventItems', () => {
+  const createAnalyticsEvent = (
+    eventHash: string,
+    timestampMs: number
+  ): MonitoringAnalyticsEventRow => ({
+    event_hash: eventHash,
+    timestamp_ms: timestampMs,
+    model: 'gpt-4.1',
+    endpoint: 'POST /v1/chat/completions',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    auth_index: 'auth-1',
+    source: 'source-1',
+    source_hash: 'source-hash-1',
+    api_key_hash: 'api-key-hash-1',
+    account_snapshot: 'alice@example.com',
+    auth_label_snapshot: 'alice.json',
+    auth_provider_snapshot: 'codex',
+    input_tokens: 10,
+    output_tokens: 5,
+    cached_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    total_tokens: 15,
+    latency_ms: 1200,
+    ttft_ms: 200,
+    failed: false,
+  });
+
+  it('reuses persisted page items while the analytics response has no new event page', () => {
+    const eventsPageItems = [createAnalyticsEvent('event-1', 1_768_759_000_000)];
+
+    const first = resolveMonitoringDisplayEventItems({
+      analyticsData: null,
+      currentPageItems: null,
+      eventsPageItems,
+      eventsBeforeMs: null,
+      dataStale: false,
+    });
+    const second = resolveMonitoringDisplayEventItems({
+      analyticsData: null,
+      currentPageItems: null,
+      eventsPageItems,
+      eventsBeforeMs: null,
+      dataStale: false,
+    });
+
+    expect(first).toBe(eventsPageItems);
+    expect(second).toBe(eventsPageItems);
+  });
+
+  it('keeps stale transitions on existing page items without creating a new array', () => {
+    const eventsPageItems = [createAnalyticsEvent('event-1', 1_768_759_000_000)];
+    const analyticsItems = [createAnalyticsEvent('event-2', 1_768_759_001_000)];
+
+    expect(
+      resolveMonitoringDisplayEventItems({
+        analyticsData: { events: { items: analyticsItems } },
+        currentPageItems: analyticsItems,
+        eventsPageItems,
+        eventsBeforeMs: null,
+        dataStale: true,
+      })
+    ).toBe(eventsPageItems);
+  });
+
+  it('reuses persisted page items after the same analytics page has been absorbed', () => {
+    const analyticsItems = [
+      createAnalyticsEvent('event-2', 1_768_759_001_000),
+      createAnalyticsEvent('event-1', 1_768_759_000_000),
+    ];
+    const eventsPageItems = [
+      createAnalyticsEvent('event-2', 1_768_759_001_000),
+      createAnalyticsEvent('event-1', 1_768_759_000_000),
+    ];
+
+    expect(
+      resolveMonitoringDisplayEventItems({
+        analyticsData: { events: { items: analyticsItems } },
+        currentPageItems: analyticsItems,
+        eventsPageItems,
+        eventsBeforeMs: null,
+        dataStale: false,
+      })
+    ).toBe(eventsPageItems);
+  });
+});
+
+describe('resolveMonitoringPresentationSnapshot', () => {
+  it('keeps the last stable presentation while a new uncached scope is loading', () => {
+    const computed = createPresentationSnapshot('computed-empty-transition');
+    const stable = createPresentationSnapshot('stable-all');
+    const result = resolveMonitoringPresentationSnapshot({
+      computedSnapshot: computed,
+      scopeKey: 'failed',
+      dataStale: true,
+      cachedSnapshots: new Map(),
+      lastStableSnapshot: stable,
+    });
+
+    expect(result.snapshot).toBe(stable);
+    expect(result.hasPresentationSnapshot).toBe(true);
+    expect(result.usingSnapshotFallback).toBe(true);
+  });
+
+  it('prefers a cached target scope presentation over the last stable scope', () => {
+    const computed = createPresentationSnapshot('computed-transition');
+    const stable = createPresentationSnapshot('stable-all');
+    const cachedFailed = createPresentationSnapshot('cached-failed');
+    const result = resolveMonitoringPresentationSnapshot({
+      computedSnapshot: computed,
+      scopeKey: 'failed',
+      dataStale: true,
+      cachedSnapshots: new Map([['failed', cachedFailed]]),
+      lastStableSnapshot: stable,
+    });
+
+    expect(result.snapshot).toBe(cachedFailed);
+    expect(result.hasPresentationSnapshot).toBe(true);
+    expect(result.usingSnapshotFallback).toBe(true);
+  });
+
+  it('returns the computed presentation for fresh data', () => {
+    const computed = createPresentationSnapshot('computed-fresh');
+    const stable = createPresentationSnapshot('stable-all');
+    const result = resolveMonitoringPresentationSnapshot({
+      computedSnapshot: computed,
+      scopeKey: 'all',
+      dataStale: false,
+      cachedSnapshots: new Map([['all', stable]]),
+      lastStableSnapshot: stable,
+    });
+
+    expect(result.snapshot).toBe(computed);
+    expect(result.hasPresentationSnapshot).toBe(true);
+    expect(result.usingSnapshotFallback).toBe(false);
   });
 });
