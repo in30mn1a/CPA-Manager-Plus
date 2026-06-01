@@ -329,3 +329,253 @@ export const formatAutoActionModeLabel = (
       return t('monitoring.codex_inspection_settings_auto_action_mode_none');
   }
 };
+
+// ─── 共享配置：字段级校验 + 概览卡数据 ───────────────────────────────
+// 本地与服务端共有的可校验文本字段（autoActionMode 走卡片选择,无需文本校验）。
+export type SharedInspectionConfigField =
+  | 'targetType'
+  | 'usedPercentThreshold'
+  | 'sampleSize'
+  | 'workers'
+  | 'deleteWorkers'
+  | 'timeout'
+  | 'retries'
+  | 'userAgent';
+
+export type SharedInspectionConfigDraft = {
+  [K in SharedInspectionConfigField]: string;
+} & {
+  autoActionMode: CodexInspectionAutoActionMode | string;
+};
+
+export type InspectionConfigFieldErrors = Partial<
+  Record<SharedInspectionConfigField, string>
+>;
+
+export type ValidatedInspectionConfigValues = {
+  targetType: string;
+  workers: number;
+  deleteWorkers: number;
+  timeout: number;
+  retries: number;
+  userAgent: string;
+  usedPercentThreshold: number;
+  sampleSize: number;
+  autoActionMode: CodexInspectionAutoActionMode;
+};
+
+type InspectionConfigDraftValidation =
+  | {
+      ok: true;
+      errors: InspectionConfigFieldErrors;
+      values: ValidatedInspectionConfigValues;
+    }
+  | {
+      ok: false;
+      errors: InspectionConfigFieldErrors;
+      values: null;
+    };
+
+export const normalizeInspectionAutoActionMode = (
+  mode: CodexInspectionAutoActionMode | string
+): CodexInspectionAutoActionMode => {
+  if (mode === 'enable' || mode === 'disable' || mode === 'delete') return mode;
+  return 'none';
+};
+
+// 字段级即时校验,边界与 normalizeConfigurableSettings 保持一致,作为两模式单一校验源。
+export const validateInspectionConfigFields = (
+  draft: SharedInspectionConfigDraft,
+  t: TFunction
+): InspectionConfigFieldErrors => {
+  const errors: InspectionConfigFieldErrors = {};
+
+  if (!draft.targetType.trim()) {
+    errors.targetType = t('monitoring.codex_inspection_settings_target_type_required');
+  }
+
+  const checkInteger = (field: SharedInspectionConfigField, min: number, labelKey: string) => {
+    const parsed = Number(draft[field].trim());
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min) {
+      errors[field] = t('monitoring.codex_inspection_settings_invalid_integer', {
+        field: t(labelKey),
+        min,
+      });
+    }
+  };
+
+  checkInteger('workers', 1, 'monitoring.codex_inspection_settings_workers_label');
+  checkInteger('deleteWorkers', 1, 'monitoring.codex_inspection_settings_delete_workers_label');
+  checkInteger('timeout', 1, 'monitoring.codex_inspection_settings_timeout_label');
+  checkInteger('retries', 0, 'monitoring.codex_inspection_settings_retries_label');
+  checkInteger('sampleSize', 0, 'monitoring.codex_inspection_settings_sample_size_label');
+
+  const threshold = Number(draft.usedPercentThreshold.trim());
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+    errors.usedPercentThreshold = t('monitoring.codex_inspection_settings_invalid_threshold', {
+      field: t('monitoring.codex_inspection_settings_used_percent_threshold_label'),
+    });
+  }
+
+  return errors;
+};
+
+export const hasInspectionConfigFieldErrors = (errors: InspectionConfigFieldErrors): boolean =>
+  Object.values(errors).some(Boolean);
+
+export const validateInspectionConfigDraft = (
+  draft: SharedInspectionConfigDraft,
+  t: TFunction
+): InspectionConfigDraftValidation => {
+  const errors = validateInspectionConfigFields(draft, t);
+  if (hasInspectionConfigFieldErrors(errors)) {
+    return { ok: false, errors, values: null };
+  }
+
+  return {
+    ok: true,
+    errors,
+    values: {
+      targetType: draft.targetType.trim(),
+      workers: Number(draft.workers.trim()),
+      deleteWorkers: Number(draft.deleteWorkers.trim()),
+      timeout: Number(draft.timeout.trim()),
+      retries: Number(draft.retries.trim()),
+      userAgent: draft.userAgent.trim(),
+      usedPercentThreshold: Number(draft.usedPercentThreshold.trim()),
+      sampleSize: Number(draft.sampleSize.trim()),
+      autoActionMode: normalizeInspectionAutoActionMode(draft.autoActionMode),
+    },
+  };
+};
+
+// 自动处置模式 → 概览卡语气色,危险动作更醒目。
+export const getAutoActionTone = (mode: CodexInspectionAutoActionMode | string): StatusTone => {
+  switch (normalizeInspectionAutoActionMode(mode)) {
+    case 'delete':
+      return 'bad';
+    case 'disable':
+      return 'warn';
+    case 'enable':
+      return 'good';
+    case 'none':
+    default:
+      return 'idle';
+  }
+};
+
+// 概览卡单项:label/value 结构,可选语气色、次要说明与点击聚焦的目标字段。
+export type ConfigOverviewItem = {
+  key: string;
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: StatusTone;
+  field?: string;
+};
+
+type ConfigOverviewSettings = Pick<
+  CodexInspectionConfigurableSettings,
+  'targetType' | 'workers' | 'timeout' | 'usedPercentThreshold' | 'sampleSize'
+> & {
+  autoActionMode: CodexInspectionAutoActionMode | string;
+};
+
+type BuildConfigOverviewItemsOptions =
+  | {
+      mode: 'local';
+      t: TFunction;
+    }
+  | {
+      mode: 'server';
+      t: TFunction;
+      scheduleEnabled: boolean;
+      scheduleLabel: string;
+    };
+
+export const buildConfigOverviewItems = (
+  settings: ConfigOverviewSettings,
+  options: BuildConfigOverviewItemsOptions
+): ConfigOverviewItem[] => {
+  const { t } = options;
+  const autoActionMode = normalizeInspectionAutoActionMode(settings.autoActionMode);
+  const autoActionLabel = formatAutoActionModeLabel(autoActionMode, t);
+  const sampleSizeLabel =
+    settings.sampleSize > 0
+      ? String(settings.sampleSize)
+      : t('monitoring.server_codex_inspection_sample_all');
+
+  if (options.mode === 'server') {
+    return [
+      {
+        key: 'schedule',
+        label: t('monitoring.server_codex_inspection_config_summary_schedule'),
+        value: options.scheduleEnabled
+          ? t('monitoring.server_codex_inspection_schedule_enabled')
+          : t('monitoring.server_codex_inspection_schedule_disabled'),
+        tone: options.scheduleEnabled ? 'good' : 'idle',
+        field: 'schedule',
+      },
+      {
+        key: 'trigger',
+        label: t('monitoring.server_codex_inspection_config_summary_trigger'),
+        value: options.scheduleLabel,
+        field: 'schedule',
+      },
+      {
+        key: 'threshold',
+        label: t('monitoring.server_codex_inspection_config_summary_threshold'),
+        value: `${settings.usedPercentThreshold}%`,
+        field: 'usedPercentThreshold',
+      },
+      {
+        key: 'sample',
+        label: t('monitoring.server_codex_inspection_config_summary_sample'),
+        value: sampleSizeLabel,
+        field: 'sampleSize',
+      },
+      {
+        key: 'auto',
+        label: t('monitoring.server_codex_inspection_config_summary_auto'),
+        value: autoActionLabel,
+        tone: getAutoActionTone(autoActionMode),
+        field: 'autoActionMode',
+      },
+    ];
+  }
+
+  return [
+    {
+      key: 'threshold',
+      label: t('monitoring.codex_inspection_threshold'),
+      value: `${settings.usedPercentThreshold}%`,
+      field: 'usedPercentThreshold',
+    },
+    {
+      key: 'sample',
+      label: t('monitoring.codex_inspection_sample_size'),
+      value: sampleSizeLabel,
+      field: 'sampleSize',
+    },
+    {
+      key: 'auto',
+      label: t('monitoring.codex_inspection_settings_auto_action_mode_label'),
+      value: autoActionLabel,
+      tone: getAutoActionTone(autoActionMode),
+      field: 'autoActionMode',
+    },
+    {
+      key: 'concurrency',
+      label: t('monitoring.codex_inspection_workers'),
+      value: String(settings.workers),
+      hint: `${t('monitoring.codex_inspection_settings_timeout_label')}: ${settings.timeout}`,
+      field: 'workers',
+    },
+    {
+      key: 'target',
+      label: t('monitoring.codex_inspection_target_type'),
+      value: settings.targetType,
+      field: 'targetType',
+    },
+  ];
+};

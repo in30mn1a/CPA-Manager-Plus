@@ -1627,6 +1627,8 @@
     "codex_inspection_progress_idle": "尚未開始巡檢",
     "codex_inspection_progress_status": "已完成 {{completed}} / {{total}} · 進行中 {{inFlight}} · 待處理 {{pending}}",
     "codex_inspection_settings_button": "巡檢設定",
+    "codex_inspection_config_overview_title": "目前巡檢設定",
+    "codex_inspection_config_overview_edit": "編輯設定",
     "codex_inspection_settings_title": "Codex 巡檢設定",
     "codex_inspection_settings_desc": "設定 Codex 帳號巡檢的目標類型、併發、逾時與閾值，儲存後會直接用於目前瀏覽器中的後續巡檢。",
     "codex_inspection_settings_saved": "巡檢設定已儲存",

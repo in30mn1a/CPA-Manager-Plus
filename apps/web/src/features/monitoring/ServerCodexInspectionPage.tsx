@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import {
@@ -6,21 +7,21 @@ import {
   IconCheck,
   IconInbox,
   IconRefreshCw,
-  IconSettings,
   IconShield,
   IconTrash2,
-  IconX,
 } from '@/components/ui/icons';
 import { Input } from '@/components/ui/Input';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
-import { CodexInspectionAutoActionEditor } from '@/features/monitoring/components/CodexInspectionAutoActionEditor';
+import { CodexInspectionConfigOverview } from '@/features/monitoring/components/CodexInspectionConfigOverview';
 import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { Panel } from '@/features/monitoring/components/CodexInspectionPanels';
+import { InspectionConfigDrawer } from '@/features/monitoring/components/InspectionConfigDrawer';
+import { InspectionConfigFields } from '@/features/monitoring/components/InspectionConfigFields';
 import {
+  buildConfigOverviewItems,
   type CodexInspectionSummaryAccent,
   formatActionLabel,
-  formatAutoActionModeLabel,
   formatPercent,
   formatTimestamp,
   getCanonicalServerCodexInspectionActionIds,
@@ -28,6 +29,8 @@ import {
   isActionableServerCodexInspectionResult,
   normalizeServerCodexInspectionActionStatus,
   type StatusTone,
+  validateInspectionConfigDraft,
+  validateInspectionConfigFields,
 } from '@/features/monitoring/model/codexInspectionPresentation';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
@@ -37,7 +40,6 @@ import {
   type CodexInspectionResult,
   type CodexInspectionRun,
   type CodexInspectionRunDetail,
-  type ManagerCodexInspectionAutoActionMode,
   type ManagerCodexInspectionConfig,
   type ManagerCodexInspectionScheduleMode,
   type ManagerConfig,
@@ -237,28 +239,22 @@ const normalizeTimePointList = (values: string[]): string[] =>
     )
   ).sort();
 
-const readInteger = (raw: string, min: number): number | null => {
+const readScheduleInteger = (raw: string, min: number): number | null => {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min) return null;
   return value;
 };
 
-const readPercent = (raw: string): number | null => {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0 || value > 100) return null;
-  return value;
-};
-
 const createConfigFromDraft = (
-  draft: ServerCodexInspectionDraft
+  draft: ServerCodexInspectionDraft,
+  t: TFunction
 ): ManagerCodexInspectionConfig | null => {
-  const workers = readInteger(draft.workers, 1);
-  const deleteWorkers = readInteger(draft.deleteWorkers, 1);
-  const timeout = readInteger(draft.timeout, 1);
-  const retries = readInteger(draft.retries, 0);
-  const sampleSize = readInteger(draft.sampleSize, 0);
-  const usedPercentThreshold = readPercent(draft.usedPercentThreshold);
-  const parsedIntervalMinutes = readInteger(draft.intervalMinutes, 1);
+  const validation = validateInspectionConfigDraft(draft, t);
+  if (!validation.ok) {
+    return null;
+  }
+
+  const parsedIntervalMinutes = readScheduleInteger(draft.intervalMinutes, 1);
   const intervalMinutes =
     parsedIntervalMinutes ?? DEFAULT_SERVER_CODEX_CONFIG.schedule.intervalMinutes;
   const hasInvalidTimePoint =
@@ -267,14 +263,7 @@ const createConfigFromDraft = (
   const timePoints = parseTimePoints(draft.timePoints);
 
   if (
-    workers === null ||
-    deleteWorkers === null ||
-    timeout === null ||
-    retries === null ||
-    sampleSize === null ||
-    usedPercentThreshold === null ||
-    (draft.scheduleMode === 'interval' && parsedIntervalMinutes === null) ||
-    !draft.targetType.trim()
+    draft.scheduleMode === 'interval' && parsedIntervalMinutes === null
   ) {
     return null;
   }
@@ -299,15 +288,15 @@ const createConfigFromDraft = (
             timePoints,
             timeZone: draft.timeZone.trim(),
           },
-    targetType: draft.targetType.trim(),
-    workers,
-    deleteWorkers,
-    timeout,
-    retries,
-    userAgent: draft.userAgent.trim(),
-    usedPercentThreshold,
-    sampleSize,
-    autoActionMode: draft.autoActionMode,
+    targetType: validation.values.targetType,
+    workers: validation.values.workers,
+    deleteWorkers: validation.values.deleteWorkers,
+    timeout: validation.values.timeout,
+    retries: validation.values.retries,
+    userAgent: validation.values.userAgent,
+    usedPercentThreshold: validation.values.usedPercentThreshold,
+    sampleSize: validation.values.sampleSize,
+    autoActionMode: validation.values.autoActionMode,
   };
 };
 
@@ -461,11 +450,6 @@ function resolveActionLabel(action: string, t: ReturnType<typeof useTranslation>
   return action || t('common.not_set');
 }
 
-function normalizeServerAutoActionMode(mode: string): ManagerCodexInspectionAutoActionMode {
-  if (mode === 'enable' || mode === 'disable' || mode === 'delete') return mode;
-  return 'none';
-}
-
 function formatServerActionStatusLabel(
   item: CodexInspectionResult,
   t: ReturnType<typeof useTranslation>['t']
@@ -555,6 +539,7 @@ export function ServerCodexInspectionPage() {
   const [executingResultIds, setExecutingResultIds] = useState<Set<number>>(() => new Set());
   const [executingAllActions, setExecutingAllActions] = useState(false);
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false);
+  const [configFocusField, setConfigFocusField] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
   const actionInFlightRef = useRef(false);
 
@@ -634,7 +619,7 @@ export function ServerCodexInspectionPage() {
     () => resolveServerCodexConfig(managerConfig?.codexInspection),
     [managerConfig?.codexInspection]
   );
-  const draftConfig = useMemo(() => createConfigFromDraft(draft), [draft]);
+  const draftConfig = useMemo(() => createConfigFromDraft(draft, t), [draft, t]);
   const normalizedDraftConfig = useMemo(
     () => (draftConfig ? resolveServerCodexConfig(draftConfig) : null),
     [draftConfig]
@@ -757,7 +742,7 @@ export function ServerCodexInspectionPage() {
       showNotification(t('monitoring.server_codex_inspection_service_unavailable'), 'warning');
       return;
     }
-    const codexInspection = createConfigFromDraft(draft);
+    const codexInspection = createConfigFromDraft(draft, t);
     if (!codexInspection) {
       showNotification(t('monitoring.server_codex_inspection_config_invalid'), 'warning');
       return;
@@ -803,6 +788,11 @@ export function ServerCodexInspectionPage() {
     }
     setConfigDrawerOpen(false);
   }, [hasUnsavedChanges, managerConfig, showConfirmation, t]);
+
+  const openConfigDrawer = useCallback((field?: string) => {
+    setConfigFocusField(field ?? null);
+    setConfigDrawerOpen(true);
+  }, []);
 
   const executeServerRun = useCallback(async () => {
     if (!serviceBase) {
@@ -952,67 +942,17 @@ export function ServerCodexInspectionPage() {
       : '--';
     const durationLabel = formatDuration(activeRun, t);
     const serviceHost = formatServiceHost(serviceBase);
-    const executionModeLabel = t('monitoring.codex_inspection_mode_server');
     const summaryBlankValue = '--';
-    const sampleSizeLabel =
-      selectedConfig.sampleSize > 0
-        ? String(selectedConfig.sampleSize)
-        : t('monitoring.server_codex_inspection_sample_all');
-    const autoActionLabel = formatAutoActionModeLabel(
-      normalizeServerAutoActionMode(selectedConfig.autoActionMode),
-      t
-    );
-    const configSummaryItems = [
-      {
-        key: 'schedule',
-        label: t('monitoring.server_codex_inspection_config_summary_schedule'),
-        value: selectedConfig.enabled
-          ? t('monitoring.server_codex_inspection_schedule_enabled')
-          : t('monitoring.server_codex_inspection_schedule_disabled'),
-      },
-      {
-        key: 'trigger',
-        label: t('monitoring.server_codex_inspection_config_summary_trigger'),
-        value: savedScheduleLabel,
-      },
-      {
-        key: 'threshold',
-        label: t('monitoring.server_codex_inspection_config_summary_threshold'),
-        value: `${selectedConfig.usedPercentThreshold}%`,
-      },
-      {
-        key: 'sample',
-        label: t('monitoring.server_codex_inspection_config_summary_sample'),
-        value: sampleSizeLabel,
-      },
-      {
-        key: 'auto',
-        label: t('monitoring.server_codex_inspection_config_summary_auto'),
-        value: autoActionLabel,
-      },
-    ];
+    const configOverviewItems = buildConfigOverviewItems(selectedConfig, {
+      mode: 'server',
+      t,
+      scheduleEnabled: selectedConfig.enabled,
+      scheduleLabel: savedScheduleLabel,
+    });
 
     return (
       <Panel
-        title={t('monitoring.server_codex_inspection_title')}
-        subtitle={t('monitoring.server_codex_inspection_desc')}
         className={styles.statusPanel}
-        extra={
-          <div className={styles.statusActions}>
-            <Button variant="secondary" size="sm" onClick={() => void refreshRuns()} loading={loading}>
-              {t('common.refresh')}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => setConfigDrawerOpen(true)}>
-              <span className={styles.buttonInline}>
-                <IconSettings size={14} />
-                <span>{t('monitoring.server_codex_inspection_open_config')}</span>
-              </span>
-            </Button>
-            <Button size="sm" onClick={handleRunNow} loading={running} disabled={!serviceBase || running}>
-              {t('monitoring.server_codex_inspection_run_now')}
-            </Button>
-          </div>
-        }
       >
         <div className={styles.statusBar}>
           <div className={styles.statusInfo}>
@@ -1032,10 +972,6 @@ export function ServerCodexInspectionPage() {
             </span>
             <div className={styles.statusMeta}>
               <span>
-                {t('monitoring.codex_inspection_execution_mode')}: {executionModeLabel}
-              </span>
-              <span>{savedScheduleLabel}</span>
-              <span>
                 {t('monitoring.server_codex_inspection_last_run')}: {lastRunTime}
                 {activeRun?.finishedAtMs ? ` · ${durationLabel}` : ''}
               </span>
@@ -1045,6 +981,14 @@ export function ServerCodexInspectionPage() {
                 </span>
               ) : null}
             </div>
+          </div>
+          <div className={styles.statusActions}>
+            <Button variant="secondary" size="sm" onClick={() => void refreshRuns()} loading={loading}>
+              {t('common.refresh')}
+            </Button>
+            <Button size="sm" onClick={handleRunNow} loading={running} disabled={!serviceBase || running}>
+              {t('monitoring.server_codex_inspection_run_now')}
+            </Button>
           </div>
         </div>
 
@@ -1066,14 +1010,13 @@ export function ServerCodexInspectionPage() {
           </ul>
         </details>
 
-        <div className={styles.serverConfigSummary} aria-label={t('monitoring.server_codex_inspection_config_summary_title')}>
-          {configSummaryItems.map((item) => (
-            <div key={item.key} className={styles.serverConfigSummaryItem}>
-              <span>{item.label}</span>
-              <strong title={item.value}>{item.value}</strong>
-            </div>
-          ))}
-        </div>
+        <CodexInspectionConfigOverview
+          title={t('monitoring.codex_inspection_config_overview_title')}
+          editLabel={t('monitoring.codex_inspection_config_overview_edit')}
+          ariaLabel={t('monitoring.server_codex_inspection_config_summary_title')}
+          items={configOverviewItems}
+          onEdit={openConfigDrawer}
+        />
 
         <div className={styles.summaryGrid}>
           {[
@@ -1160,11 +1103,6 @@ export function ServerCodexInspectionPage() {
                     {card.meta}
                   </span>
                 </div>
-                <div className={styles.summarySparkline} aria-hidden="true">
-                  <svg viewBox="0 0 100 30" preserveAspectRatio="none">
-                    <path d="M0,25 Q15,6 30,19 T60,11 T100,24" />
-                  </svg>
-                </div>
               </div>
             );
           })}
@@ -1179,227 +1117,18 @@ export function ServerCodexInspectionPage() {
   };
 
   const renderConfigDrawer = () => {
-    if (!configDrawerOpen) return null;
+    const fieldErrors = validateInspectionConfigFields(draft, t);
 
     return (
-      <div
-        className={styles.configDrawerOverlay}
-        onMouseDown={(event) => {
-          if (event.target === event.currentTarget) {
-            handleCloseConfigDrawer();
-          }
-        }}
-      >
-        <aside
-          className={styles.configDrawer}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="server-codex-config-drawer-title"
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          <header className={styles.configDrawerHeader}>
-            <div>
-              <h2 id="server-codex-config-drawer-title">
-                {t('monitoring.server_codex_inspection_config_title')}
-              </h2>
-              <p>{t('monitoring.server_codex_inspection_config_desc')}</p>
-            </div>
-            <button
-              type="button"
-              className={styles.configDrawerClose}
-              onClick={handleCloseConfigDrawer}
-              aria-label={t('common.close')}
-            >
-              <IconX size={18} />
-            </button>
-          </header>
-
-          <div className={styles.configDrawerBody}>
-            <section className={styles.configSection}>
-              <header className={styles.configSectionHeader}>
-                <span>{t('monitoring.server_codex_inspection_config_group_schedule')}</span>
-              </header>
-              <div className={styles.serverConfigGrid}>
-                <div className={`${styles.serverField} ${styles.serverFieldWide}`}>
-                  <ToggleSwitch
-                    checked={draft.enabled}
-                    onChange={(value) => updateDraft('enabled', value)}
-                    label={t('monitoring.server_codex_inspection_enable_schedule')}
-                  />
-                </div>
-
-                <div className={`${styles.serverField} ${styles.serverFieldWide}`}>
-                  <span className={styles.serverFieldLabel}>
-                    {t('monitoring.server_codex_inspection_schedule_mode')}
-                  </span>
-                  <div className={styles.scheduleSegmented} role="tablist" aria-label={t('monitoring.server_codex_inspection_schedule_mode')}>
-                    {scheduleOptions.map((opt) => {
-                      const active = draft.scheduleMode === opt.value;
-                      return (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          role="tab"
-                          aria-selected={active}
-                          className={`${styles.scheduleSegmentButton} ${active ? styles.scheduleSegmentButtonActive : ''}`}
-                          onClick={() =>
-                            updateDraft(
-                              'scheduleMode',
-                              isScheduleMode(opt.value)
-                                ? opt.value
-                                : DEFAULT_SERVER_CODEX_CONFIG.schedule.mode
-                            )
-                          }
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {draft.scheduleMode === 'interval' ? (
-                  <div className={styles.serverField}>
-                    <Input
-                      label={t('monitoring.server_codex_inspection_interval_minutes')}
-                      type="number"
-                      min="1"
-                      value={draft.intervalMinutes}
-                      onChange={(event) => updateDraft('intervalMinutes', event.target.value)}
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
-                      <Input
-                        label={t('monitoring.server_codex_inspection_time_points')}
-                        value={draft.timePoints}
-                        onChange={(event) => updateDraft('timePoints', event.target.value)}
-                        placeholder="09:00, 13:30, 22:00"
-                        hint={t('monitoring.server_codex_inspection_time_points_hint')}
-                      />
-                    </div>
-                    <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
-                      <span className={styles.serverFieldLabel}>
-                        {t('monitoring.server_codex_inspection_time_zone')}
-                      </span>
-                      <Select
-                        value={draft.timeZone}
-                        options={timeZoneOptions}
-                        onChange={(value) => updateDraft('timeZone', value)}
-                        ariaLabel={t('monitoring.server_codex_inspection_time_zone')}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-            </section>
-
-            <section className={styles.configSection}>
-              <header className={styles.configSectionHeader}>
-                <span>{t('monitoring.server_codex_inspection_config_group_rules')}</span>
-              </header>
-              <div className={styles.serverConfigGrid}>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_used_percent_threshold_label')}
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={draft.usedPercentThreshold}
-                    onChange={(event) => updateDraft('usedPercentThreshold', event.target.value)}
-                  />
-                </div>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_sample_size_label')}
-                    type="number"
-                    min="0"
-                    value={draft.sampleSize}
-                    onChange={(event) => updateDraft('sampleSize', event.target.value)}
-                  />
-                </div>
-              </div>
-            </section>
-
-            <section className={styles.configSection}>
-              <header className={styles.configSectionHeader}>
-                <span>{t('monitoring.server_codex_inspection_config_group_auto')}</span>
-              </header>
-              <div className={styles.autoActionField}>
-                <CodexInspectionAutoActionEditor
-                  value={draft.autoActionMode}
-                  t={t}
-                  onChange={(value: ManagerCodexInspectionAutoActionMode) =>
-                    updateDraft('autoActionMode', value)
-                  }
-                />
-              </div>
-            </section>
-
-            <details className={styles.advancedSection}>
-              <summary>
-                <span>{t('monitoring.server_codex_inspection_advanced_title')}</span>
-                <span className={styles.advancedSummaryHint}>
-                  {t('monitoring.server_codex_inspection_advanced_hint')}
-                </span>
-              </summary>
-              <div className={styles.advancedBody}>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_target_type_label')}
-                    value={draft.targetType}
-                    onChange={(event) => updateDraft('targetType', event.target.value)}
-                  />
-                </div>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_workers_label')}
-                    type="number"
-                    min="1"
-                    value={draft.workers}
-                    onChange={(event) => updateDraft('workers', event.target.value)}
-                  />
-                </div>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_delete_workers_label')}
-                    type="number"
-                    min="1"
-                    value={draft.deleteWorkers}
-                    onChange={(event) => updateDraft('deleteWorkers', event.target.value)}
-                  />
-                </div>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_timeout_label')}
-                    type="number"
-                    min="1"
-                    value={draft.timeout}
-                    onChange={(event) => updateDraft('timeout', event.target.value)}
-                  />
-                </div>
-                <div className={styles.serverField}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_retries_label')}
-                    type="number"
-                    min="0"
-                    value={draft.retries}
-                    onChange={(event) => updateDraft('retries', event.target.value)}
-                  />
-                </div>
-                <div className={`${styles.serverField} ${styles.serverFieldWide}`}>
-                  <Input
-                    label={t('monitoring.codex_inspection_settings_user_agent_label')}
-                    value={draft.userAgent}
-                    onChange={(event) => updateDraft('userAgent', event.target.value)}
-                  />
-                </div>
-              </div>
-            </details>
-          </div>
-
-          <footer className={styles.configDrawerFooter}>
+      <InspectionConfigDrawer
+        open={configDrawerOpen}
+        title={t('monitoring.server_codex_inspection_config_title')}
+        description={t('monitoring.server_codex_inspection_config_desc')}
+        closeLabel={t('common.close')}
+        focusField={configFocusField}
+        onClose={handleCloseConfigDrawer}
+        footer={
+          <>
             <div className={styles.configDrawerStatus}>
               {hasUnsavedChanges ? (
                 <span className={styles.serverUnsavedBadge}>
@@ -1427,9 +1156,99 @@ export function ServerCodexInspectionPage() {
                 {t('monitoring.server_codex_inspection_save_apply')}
               </Button>
             </div>
-          </footer>
-        </aside>
-      </div>
+          </>
+        }
+      >
+        <section className={styles.configSection} id="schedule">
+          <header className={styles.configSectionHeader}>
+            <span>{t('monitoring.server_codex_inspection_config_group_schedule')}</span>
+          </header>
+          <div className={styles.serverConfigGrid}>
+            <div className={`${styles.serverField} ${styles.serverFieldWide}`}>
+              <ToggleSwitch
+                checked={draft.enabled}
+                onChange={(value) => updateDraft('enabled', value)}
+                label={t('monitoring.server_codex_inspection_enable_schedule')}
+              />
+            </div>
+
+            <div className={`${styles.serverField} ${styles.serverFieldWide}`}>
+              <span className={styles.serverFieldLabel}>
+                {t('monitoring.server_codex_inspection_schedule_mode')}
+              </span>
+              <div className={styles.scheduleSegmented} role="tablist" aria-label={t('monitoring.server_codex_inspection_schedule_mode')}>
+                {scheduleOptions.map((opt) => {
+                  const active = draft.scheduleMode === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      className={`${styles.scheduleSegmentButton} ${active ? styles.scheduleSegmentButtonActive : ''}`}
+                      onClick={() =>
+                        updateDraft(
+                          'scheduleMode',
+                          isScheduleMode(opt.value)
+                            ? opt.value
+                            : DEFAULT_SERVER_CODEX_CONFIG.schedule.mode
+                        )
+                      }
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {draft.scheduleMode === 'interval' ? (
+              <div className={styles.serverField}>
+                <Input
+                  id="intervalMinutes"
+                  label={t('monitoring.server_codex_inspection_interval_minutes')}
+                  type="number"
+                  min="1"
+                  value={draft.intervalMinutes}
+                  onChange={(event) => updateDraft('intervalMinutes', event.target.value)}
+                />
+              </div>
+            ) : (
+              <>
+                <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
+                  <Input
+                    id="timePoints"
+                    label={t('monitoring.server_codex_inspection_time_points')}
+                    value={draft.timePoints}
+                    onChange={(event) => updateDraft('timePoints', event.target.value)}
+                    placeholder="09:00, 13:30, 22:00"
+                    hint={t('monitoring.server_codex_inspection_time_points_hint')}
+                  />
+                </div>
+                <div className={`${styles.serverField} ${styles.serverFieldHalf}`}>
+                  <span className={styles.serverFieldLabel}>
+                    {t('monitoring.server_codex_inspection_time_zone')}
+                  </span>
+                  <Select
+                    value={draft.timeZone}
+                    options={timeZoneOptions}
+                    onChange={(value) => updateDraft('timeZone', value)}
+                    ariaLabel={t('monitoring.server_codex_inspection_time_zone')}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        </section>
+
+        <InspectionConfigFields
+          draft={draft}
+          errors={fieldErrors}
+          t={t}
+          onFieldChange={(field, value) => updateDraft(field, value)}
+          onAutoActionModeChange={(value) => updateDraft('autoActionMode', value)}
+        />
+      </InspectionConfigDrawer>
     );
   };
 

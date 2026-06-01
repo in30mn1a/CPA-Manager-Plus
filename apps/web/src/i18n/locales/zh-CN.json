@@ -1602,6 +1602,8 @@
     "codex_inspection_progress_idle": "尚未开始巡检",
     "codex_inspection_progress_status": "已完成 {{completed}} / {{total}} · 进行中 {{inFlight}} · 待处理 {{pending}}",
     "codex_inspection_settings_button": "巡检配置",
+    "codex_inspection_config_overview_title": "当前巡检配置",
+    "codex_inspection_config_overview_edit": "编辑配置",
     "codex_inspection_settings_title": "Codex 巡检配置",
     "codex_inspection_settings_desc": "配置 Codex 账号巡检的目标类型、并发、超时和阈值，保存后会直接用于当前浏览器中的后续巡检。",
     "codex_inspection_settings_saved": "巡检配置已保存",

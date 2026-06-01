@@ -25,20 +25,25 @@ import {
   type CodexInspectionRunResult,
   type CodexInspectionSession,
 } from '@/features/monitoring/codexInspection';
+import { Button } from '@/components/ui/Button';
 import { CodexInspectionLogsPanel } from '@/features/monitoring/components/CodexInspectionLogsPanel';
 import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { CodexInspectionResultsPanel } from '@/features/monitoring/components/CodexInspectionResultsPanel';
-import { CodexInspectionSettingsModal } from '@/features/monitoring/components/CodexInspectionSettingsModal';
 import { CodexInspectionStatusPanel } from '@/features/monitoring/components/CodexInspectionStatusPanel';
+import { InspectionConfigDrawer } from '@/features/monitoring/components/InspectionConfigDrawer';
+import { InspectionConfigFields } from '@/features/monitoring/components/InspectionConfigFields';
 import {
   countActions,
   createCompletedProgressSnapshot,
   createIdleProgressSnapshot,
+  buildConfigOverviewItems,
   filterByAction,
   formatActionLabel,
   formatAutoActionModeLabel,
   formatTime,
   toSettingsDraft,
+  validateInspectionConfigDraft,
+  validateInspectionConfigFields,
   type ActionFilter,
   type ExecutionTriggerSource,
   type InspectionLogEntry,
@@ -80,6 +85,7 @@ export function CodexInspectionPage() {
     toSettingsDraft(loadCodexInspectionConfigurableSettings(config))
   );
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [configFocusField, setConfigFocusField] = useState<string | null>(null);
   const [logs, setLogs] = useState<InspectionLogEntry[]>(() => initialLastRun?.logs ?? []);
   const [logsCollapsed, setLogsCollapsed] = useState(() => initialLastRun?.logsCollapsed ?? true);
   const [runStatus, setRunStatus] = useState<RunStatus>(() =>
@@ -676,8 +682,9 @@ export function CodexInspectionPage() {
     ? `${t('monitoring.codex_inspection_last_finished_at')} · ${formatTime(result.finishedAt, i18n.language)}`
     : null;
 
-  const openSettingsModal = useCallback(() => {
+  const openSettingsModal = useCallback((field?: string) => {
     setSettingsDraft(toSettingsDraft(inspectionSettings));
+    setConfigFocusField(field ?? null);
     setIsSettingsModalOpen(true);
   }, [inspectionSettings]);
 
@@ -698,75 +705,51 @@ export function CodexInspectionPage() {
     }));
   }, []);
 
-  const parseNonNegativeInteger = useCallback(
-    (value: string, label: string, min: number) => {
-      const parsed = Number(value.trim());
-      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min) {
-        throw new Error(t('monitoring.codex_inspection_settings_invalid_integer', { field: label, min }));
-      }
-      return parsed;
-    },
-    [t]
+  const settingsFieldErrors = useMemo(
+    () => validateInspectionConfigFields(settingsDraft, t),
+    [settingsDraft, t]
   );
 
+  const hasUnsavedSettings = useMemo(() => {
+    const baseline = toSettingsDraft(inspectionSettings);
+    return (Object.keys(baseline) as (keyof InspectionSettingsDraft)[]).some(
+      (key) => baseline[key] !== settingsDraft[key]
+    );
+  }, [inspectionSettings, settingsDraft]);
+
   const handleSaveSettings = useCallback(() => {
-    const targetType = settingsDraft.targetType.trim().toLowerCase();
-    if (!targetType) {
-      showNotification(t('monitoring.codex_inspection_settings_target_type_required'), 'error');
+    const validation = validateInspectionConfigDraft(settingsDraft, t);
+    if (!validation.ok) {
+      const firstError = Object.values(validation.errors).find(Boolean);
+      showNotification(firstError ?? t('common.unknown_error'), 'error');
       return;
     }
 
-    try {
-      const nextSettings = saveCodexInspectionConfigurableSettings({
-        targetType,
-        workers: parseNonNegativeInteger(
-          settingsDraft.workers,
-          t('monitoring.codex_inspection_settings_workers_label'),
-          1
-        ),
-        deleteWorkers: parseNonNegativeInteger(
-          settingsDraft.deleteWorkers,
-          t('monitoring.codex_inspection_settings_delete_workers_label'),
-          1
-        ),
-        timeout: parseNonNegativeInteger(
-          settingsDraft.timeout,
-          t('monitoring.codex_inspection_settings_timeout_label'),
-          1
-        ),
-        retries: parseNonNegativeInteger(
-          settingsDraft.retries,
-          t('monitoring.codex_inspection_settings_retries_label'),
-          0
-        ),
-        userAgent: settingsDraft.userAgent.trim(),
-        sampleSize: parseNonNegativeInteger(
-          settingsDraft.sampleSize,
-          t('monitoring.codex_inspection_settings_sample_size_label'),
-          0
-        ),
-        usedPercentThreshold: (() => {
-          const parsed = Number(settingsDraft.usedPercentThreshold.trim());
-          if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
-            throw new Error(
-              t('monitoring.codex_inspection_settings_invalid_threshold', {
-                field: t('monitoring.codex_inspection_settings_used_percent_threshold_label'),
-              })
-            );
-          }
-          return parsed;
-        })(),
-        autoActionMode: settingsDraft.autoActionMode,
-      });
+    const nextSettings = saveCodexInspectionConfigurableSettings(validation.values);
 
-      setInspectionSettings(nextSettings);
-      setSettingsDraft(toSettingsDraft(nextSettings));
-      setIsSettingsModalOpen(false);
-      showNotification(t('monitoring.codex_inspection_settings_saved'), 'success');
-    } catch (error) {
-      showNotification(error instanceof Error ? error.message : String(error || t('common.unknown_error')), 'error');
+    setInspectionSettings(nextSettings);
+    setSettingsDraft(toSettingsDraft(nextSettings));
+    setIsSettingsModalOpen(false);
+    showNotification(t('monitoring.codex_inspection_settings_saved'), 'success');
+  }, [settingsDraft, showNotification, t]);
+
+  const handleCloseSettingsDrawer = useCallback(() => {
+    if (hasUnsavedSettings) {
+      showConfirmation({
+        title: t('monitoring.server_codex_inspection_close_confirm_title'),
+        message: t('monitoring.server_codex_inspection_close_unsaved_hint'),
+        confirmText: t('monitoring.server_codex_inspection_discard'),
+        cancelText: t('common.cancel'),
+        variant: 'danger',
+        onConfirm: () => {
+          setSettingsDraft(toSettingsDraft(inspectionSettings));
+          setIsSettingsModalOpen(false);
+        },
+      });
+      return;
     }
-  }, [parseNonNegativeInteger, settingsDraft, showNotification, t]);
+    setIsSettingsModalOpen(false);
+  }, [hasUnsavedSettings, inspectionSettings, showConfirmation, t]);
 
   const handleResetSettings = useCallback(() => {
     clearCodexInspectionConfigurableSettings();
@@ -826,19 +809,18 @@ export function CodexInspectionPage() {
       : runStatus === 'running'
         ? t('monitoring.codex_inspection_running')
         : t('monitoring.codex_inspection_run_local');
-  const autoActionModeLabel = formatAutoActionModeLabel(inspectionSettings.autoActionMode, t);
-  const executionModeLabel = t('monitoring.codex_inspection_mode_local');
+  const configOverviewItems = buildConfigOverviewItems(inspectionSettings, {
+    mode: 'local',
+    t,
+  });
 
   return (
     <div className={styles.page}>
       <CodexInspectionModeTabs activeMode="local" />
 
       <CodexInspectionStatusPanel
-        inspectionSettings={inspectionSettings}
         statusTone={statusTone}
         statusLabel={statusLabel}
-        executionModeLabel={executionModeLabel}
-        autoActionModeLabel={autoActionModeLabel}
         lastFinishedLabel={lastFinishedLabel}
         pendingActionCount={pendingActionCount}
         summaryCards={summaryCards}
@@ -850,8 +832,11 @@ export function CodexInspectionPage() {
         executing={executing}
         isInspectionInFlight={isInspectionInFlight}
         runDisabled={runStatus === 'running' || executing || connectionStatus !== 'connected'}
+        configOverviewItems={configOverviewItems}
+        configOverviewTitle={t('monitoring.codex_inspection_config_overview_title')}
+        configOverviewEditLabel={t('monitoring.codex_inspection_config_overview_edit')}
         t={t}
-        onOpenSettings={openSettingsModal}
+        onEditConfig={openSettingsModal}
         onRunInspection={handleRunInspection}
         onPauseInspection={handlePauseInspection}
         onStopInspection={handleStopInspection}
@@ -884,16 +869,48 @@ export function CodexInspectionPage() {
         onToggleCollapsed={() => setLogsCollapsed((previous) => !previous)}
       />
 
-      <CodexInspectionSettingsModal
+      <InspectionConfigDrawer
         open={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
-        settingsDraft={settingsDraft}
-        t={t}
-        onDraftChange={handleSettingsDraftChange}
-        onAutoActionModeChange={handleAutoActionModeChange}
-        onReset={handleResetSettings}
-        onSave={handleSaveSettings}
-      />
+        title={t('monitoring.codex_inspection_settings_title')}
+        description={t('monitoring.codex_inspection_settings_desc')}
+        closeLabel={t('common.close')}
+        focusField={configFocusField}
+        onClose={handleCloseSettingsDrawer}
+        footer={
+          <>
+            <div className={styles.configDrawerStatus}>
+              {hasUnsavedSettings ? (
+                <span className={styles.serverUnsavedBadge}>
+                  {t('monitoring.server_codex_inspection_unsaved')}
+                </span>
+              ) : (
+                <span>{t('monitoring.server_codex_inspection_saved_applied')}</span>
+              )}
+            </div>
+            <div className={styles.configDrawerActions}>
+              <Button
+                variant="secondary"
+                size="sm"
+                className={styles.settingsResetButton}
+                onClick={handleResetSettings}
+              >
+                {t('monitoring.codex_inspection_settings_reset_button')}
+              </Button>
+              <Button size="sm" onClick={handleSaveSettings}>
+                {t('common.save')}
+              </Button>
+            </div>
+          </>
+        }
+      >
+        <InspectionConfigFields
+          draft={settingsDraft}
+          errors={settingsFieldErrors}
+          t={t}
+          onFieldChange={handleSettingsDraftChange}
+          onAutoActionModeChange={handleAutoActionModeChange}
+        />
+      </InspectionConfigDrawer>
     </div>
   );
 }

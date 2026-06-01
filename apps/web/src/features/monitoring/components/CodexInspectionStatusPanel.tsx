@@ -9,16 +9,14 @@ import {
   IconExternalLink,
   IconInbox,
   IconRefreshCw,
-  IconSettings,
   IconShield,
   IconTrash2,
   type IconProps,
 } from '@/components/ui/icons';
+import { type CodexInspectionProgressSnapshot } from '@/features/monitoring/codexInspection';
+import { CodexInspectionConfigOverview } from '@/features/monitoring/components/CodexInspectionConfigOverview';
 import {
-  type CodexInspectionConfigurableSettings,
-  type CodexInspectionProgressSnapshot,
-} from '@/features/monitoring/codexInspection';
-import {
+  type ConfigOverviewItem,
   type RunStatus,
   type StatusTone,
   type SummaryCard,
@@ -44,11 +42,8 @@ const summaryAccentClassMap: Record<NonNullable<SummaryCard['accent']>, string> 
 };
 
 type CodexInspectionStatusPanelProps = {
-  inspectionSettings: CodexInspectionConfigurableSettings;
   statusTone: StatusTone;
   statusLabel: string;
-  executionModeLabel: string;
-  autoActionModeLabel: string;
   lastFinishedLabel: string | null;
   pendingActionCount: number;
   summaryCards: SummaryCard[];
@@ -60,19 +55,19 @@ type CodexInspectionStatusPanelProps = {
   executing: boolean;
   isInspectionInFlight: boolean;
   runDisabled: boolean;
+  configOverviewItems: ConfigOverviewItem[];
+  configOverviewTitle: string;
+  configOverviewEditLabel: string;
   t: TFunction;
-  onOpenSettings: () => void;
+  onEditConfig: (field?: string) => void;
   onRunInspection: () => void;
   onPauseInspection: () => void;
   onStopInspection: () => void;
 };
 
 export function CodexInspectionStatusPanel({
-  inspectionSettings,
   statusTone,
   statusLabel,
-  executionModeLabel,
-  autoActionModeLabel,
   lastFinishedLabel,
   pendingActionCount,
   summaryCards,
@@ -84,8 +79,11 @@ export function CodexInspectionStatusPanel({
   executing,
   isInspectionInFlight,
   runDisabled,
+  configOverviewItems,
+  configOverviewTitle,
+  configOverviewEditLabel,
   t,
-  onOpenSettings,
+  onEditConfig,
   onRunInspection,
   onPauseInspection,
   onStopInspection,
@@ -100,16 +98,6 @@ export function CodexInspectionStatusPanel({
               {statusLabel}
             </span>
             <div className={styles.statusMeta}>
-              <span>{`${t('monitoring.codex_inspection_execution_mode')}: ${executionModeLabel}`}</span>
-              <span>{`${t('monitoring.codex_inspection_target_type')}: ${inspectionSettings.targetType}`}</span>
-              <span>{`${t('monitoring.codex_inspection_threshold')}: ${inspectionSettings.usedPercentThreshold}%`}</span>
-              <span>{`${t('monitoring.codex_inspection_workers')}: ${inspectionSettings.workers}`}</span>
-              <span>{`${t('monitoring.codex_inspection_sample_size')}: ${inspectionSettings.sampleSize || t('common.no')}`}</span>
-              {inspectionSettings.autoActionMode !== 'none' ? (
-                <span className={styles.statusMetaWarn}>
-                  {`${t('monitoring.codex_inspection_settings_auto_action_mode_label')}: ${autoActionModeLabel}`}
-                </span>
-              ) : null}
               {lastFinishedLabel ? <span>{lastFinishedLabel}</span> : null}
               {pendingActionCount > 0 ? (
                 <span
@@ -124,16 +112,6 @@ export function CodexInspectionStatusPanel({
               <IconExternalLink size={14} />
               <span>{t('monitoring.codex_inspection_back')}</span>
             </Link>
-            <button
-              type="button"
-              className={styles.iconButton}
-              onClick={onOpenSettings}
-              disabled={isInspectionInFlight || executing}
-              aria-label={t('monitoring.codex_inspection_settings_button')}
-              title={t('monitoring.codex_inspection_settings_button')}
-            >
-              <IconSettings size={16} />
-            </button>
             <Button
               variant="primary"
               onClick={onRunInspection}
@@ -179,6 +157,13 @@ export function CodexInspectionStatusPanel({
         ) : null}
       </Card>
 
+      <CodexInspectionConfigOverview
+        title={configOverviewTitle}
+        editLabel={configOverviewEditLabel}
+        items={configOverviewItems}
+        onEdit={onEditConfig}
+      />
+
       <div className={styles.summaryShell}>
         <section className={styles.summaryGrid}>
           {summaryCards.map((card) => {
@@ -209,11 +194,6 @@ export function CodexInspectionStatusPanel({
                   <span className={styles.summaryMeta} title={card.meta}>
                     {card.meta}
                   </span>
-                </div>
-                <div className={styles.summarySparkline} aria-hidden="true">
-                  <svg viewBox="0 0 100 30" preserveAspectRatio="none">
-                    <path d="M0,25 Q15,6 30,19 T60,11 T100,24" />
-                  </svg>
                 </div>
               </div>
             );

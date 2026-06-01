@@ -1598,6 +1598,8 @@
     "codex_inspection_progress_idle": "Проверка ещё не запускалась.",
     "codex_inspection_progress_status": "Завершено {{completed}} / {{total}} · В работе {{inFlight}} · В очереди {{pending}}",
     "codex_inspection_settings_button": "Настройки проверки",
+    "codex_inspection_config_overview_title": "Текущая конфигурация проверки",
+    "codex_inspection_config_overview_edit": "Изменить",
     "codex_inspection_settings_title": "Настройки проверки Codex",
     "codex_inspection_settings_desc": "Настройте целевой тип, параллелизм, таймаут и порог для проверки аккаунтов Codex. Сохранённые значения используются для следующих запусков в этом браузере.",
     "codex_inspection_settings_saved": "Настройки проверки сохранены",

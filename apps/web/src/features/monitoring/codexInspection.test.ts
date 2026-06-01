@@ -16,12 +16,14 @@ import {
   type CodexInspectionRunResult,
 } from './codexInspection';
 import {
+  buildConfigOverviewItems,
   countActions,
   filterByAction,
   getCanonicalServerCodexInspectionActionIds,
   getMixedServerCodexInspectionActionIds,
   isActionableServerCodexInspectionResult,
   normalizeServerCodexInspectionActionStatus,
+  validateInspectionConfigDraft,
 } from './model/codexInspectionPresentation';
 
 const createStorage = () => {
@@ -126,6 +128,122 @@ describe('Codex inspection settings', () => {
     );
 
     expect(loadCodexInspectionConfigurableSettings(null).autoActionMode).toBe('disable');
+  });
+
+  it('validates shared config drafts before saving', () => {
+    const t = ((key: string, values?: Record<string, unknown>) => {
+      if (key === 'monitoring.codex_inspection_settings_invalid_integer') {
+        return `${values?.field} >= ${values?.min}`;
+      }
+      if (key === 'monitoring.codex_inspection_settings_invalid_threshold') {
+        return `${values?.field} 0-100`;
+      }
+      return key;
+    }) as never;
+
+    const invalid = validateInspectionConfigDraft(
+      {
+        targetType: ' ',
+        workers: '0',
+        deleteWorkers: '2',
+        timeout: '15000',
+        retries: '-1',
+        userAgent: 'agent',
+        usedPercentThreshold: '120',
+        sampleSize: 'all',
+        autoActionMode: 'delete',
+      },
+      t
+    );
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.errors.targetType).toBe(
+      'monitoring.codex_inspection_settings_target_type_required'
+    );
+    expect(invalid.errors.workers).toContain('>= 1');
+    expect(invalid.errors.retries).toContain('>= 0');
+    expect(invalid.errors.usedPercentThreshold).toContain('0-100');
+    expect(invalid.errors.sampleSize).toContain('>= 0');
+
+    const valid = validateInspectionConfigDraft(
+      {
+        targetType: ' Codex ',
+        workers: '3',
+        deleteWorkers: '2',
+        timeout: '15000',
+        retries: '0',
+        userAgent: ' agent ',
+        usedPercentThreshold: '99.5',
+        sampleSize: '0',
+        autoActionMode: 'unexpected',
+      },
+      t
+    );
+
+    expect(valid.ok).toBe(true);
+    expect(valid.values).toEqual({
+      targetType: 'Codex',
+      workers: 3,
+      deleteWorkers: 2,
+      timeout: 15000,
+      retries: 0,
+      userAgent: 'agent',
+      usedPercentThreshold: 99.5,
+      sampleSize: 0,
+      autoActionMode: 'none',
+    });
+  });
+
+  it('builds local and server config overview items from the shared model', () => {
+    const labels: Record<string, string> = {
+      'monitoring.codex_inspection_threshold': 'Threshold',
+      'monitoring.codex_inspection_sample_size': 'Sample',
+      'monitoring.codex_inspection_settings_auto_action_mode_label': 'Auto',
+      'monitoring.codex_inspection_settings_auto_action_mode_delete': 'Auto delete',
+      'monitoring.codex_inspection_workers': 'Workers',
+      'monitoring.codex_inspection_settings_timeout_label': 'Timeout',
+      'monitoring.codex_inspection_target_type': 'Target',
+      'monitoring.server_codex_inspection_sample_all': 'All',
+      'monitoring.server_codex_inspection_config_summary_schedule': 'Schedule',
+      'monitoring.server_codex_inspection_config_summary_trigger': 'Trigger',
+      'monitoring.server_codex_inspection_config_summary_threshold': 'Threshold',
+      'monitoring.server_codex_inspection_config_summary_sample': 'Sample',
+      'monitoring.server_codex_inspection_config_summary_auto': 'Auto',
+      'monitoring.server_codex_inspection_schedule_enabled': 'Enabled',
+      'monitoring.server_codex_inspection_schedule_disabled': 'Disabled',
+    };
+    const t = ((key: string) => labels[key] ?? key) as never;
+    const settings = {
+      targetType: 'codex',
+      workers: 4,
+      timeout: 15000,
+      usedPercentThreshold: 100,
+      sampleSize: 0,
+      autoActionMode: 'delete' as const,
+    };
+
+    expect(buildConfigOverviewItems(settings, { mode: 'local', t })).toMatchObject([
+      { key: 'threshold', value: '100%', field: 'usedPercentThreshold' },
+      { key: 'sample', value: 'All', field: 'sampleSize' },
+      { key: 'auto', value: 'Auto delete', tone: 'bad', field: 'autoActionMode' },
+      { key: 'concurrency', value: '4', hint: 'Timeout: 15000', field: 'workers' },
+      { key: 'target', value: 'codex', field: 'targetType' },
+    ]);
+
+    expect(
+      buildConfigOverviewItems(settings, {
+        mode: 'server',
+        t,
+        scheduleEnabled: true,
+        scheduleLabel: 'Every 60 minutes',
+      })
+    ).toMatchObject([
+      { key: 'schedule', value: 'Enabled', tone: 'good', field: 'schedule' },
+      { key: 'trigger', value: 'Every 60 minutes', field: 'schedule' },
+      { key: 'threshold', value: '100%', field: 'usedPercentThreshold' },
+      { key: 'sample', value: 'All', field: 'sampleSize' },
+      { key: 'auto', value: 'Auto delete', tone: 'bad', field: 'autoActionMode' },
+    ]);
   });
 });
 
