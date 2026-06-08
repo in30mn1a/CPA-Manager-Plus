@@ -102,7 +102,6 @@ import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
 import { useRequestMonitoringAvailability } from '@/hooks/useRequestMonitoringAvailability';
 import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
-import { authFilesApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import { formatFileSize } from '@/utils/format';
 import type { StatusBarData } from '@/utils/recentRequests';
@@ -208,7 +207,6 @@ export function MonitoringCenterPage() {
     table: DEFAULT_ACCOUNT_PAGE_SIZE,
     card: initialAccountOverviewUiState.current.cardPagination.pageSize,
   }));
-  const [accountStatusUpdating, setAccountStatusUpdating] = useState<Record<string, boolean>>({});
   const [apiKeyPage, setApiKeyPage] = useState(1);
   const [apiKeyPageSize, setApiKeyPageSize] = useState<number>(
     initialMonitoringCenterUiState.current.apiKeyPageSize
@@ -932,52 +930,6 @@ export function MonitoringCenterPage() {
     setApiKeyPage(1);
   }, []);
 
-  const handleAccountStatusToggle = useCallback(
-    async (row: MonitoringAccountRow, enabled: boolean) => {
-      const authState = accountAuthStateByRowId.get(row.id);
-      const fileNames = authState?.toggleableFileNames ?? [];
-      if (fileNames.length === 0) return;
-
-      setAccountStatusUpdating((previous) => ({ ...previous, [row.id]: true }));
-
-      const results = await Promise.allSettled(
-        fileNames.map((fileName) => authFilesApi.setStatusWithFallback(fileName, !enabled))
-      );
-
-      const successCount = results.filter((result) => result.status === 'fulfilled').length;
-      const failureCount = results.length - successCount;
-
-      try {
-        await refreshMeta(false);
-      } finally {
-        setAccountStatusUpdating((previous) => {
-          const next = { ...previous };
-          delete next[row.id];
-          return next;
-        });
-      }
-
-      if (failureCount === 0) {
-        showNotification(
-          enabled
-            ? t('monitoring.account_overview_status_enabled_success', { count: successCount })
-            : t('monitoring.account_overview_status_disabled_success', { count: successCount }),
-          'success'
-        );
-        return;
-      }
-
-      showNotification(
-        t('monitoring.account_overview_status_partial', {
-          success: successCount,
-          failed: failureCount,
-        }),
-        successCount > 0 ? 'warning' : 'error'
-      );
-    },
-    [accountAuthStateByRowId, refreshMeta, showNotification, t]
-  );
-
   const handleRealtimePageSizeChange = useCallback((pageSize: number) => {
     setRealtimePageSize(pageSize);
     setRealtimePage(1);
@@ -1298,7 +1250,6 @@ export function MonitoringCenterPage() {
                 accountStatusDataByRowId={accountStatusDataByRowId}
                 emptyAccountStatusData={emptyAccountStatusData}
                 accountQuotaStates={accountQuotaStates}
-                accountStatusUpdating={accountStatusUpdating}
                 accountPageSize={accountPageSize}
                 accountPageSizeOptions={accountPageSizeOptions}
                 accountOverviewScopeText={accountOverviewScopeText}
@@ -1313,7 +1264,6 @@ export function MonitoringCenterPage() {
                 onModeChange={setAccountOverviewMode}
                 onAccountDisplayModeChange={setAccountDisplayMode}
                 onAccountSort={handleAccountSort}
-                onAccountStatusToggle={handleAccountStatusToggle}
                 onLoadAccountQuota={loadAccountQuota}
                 onToggleExpanded={toggleAccountExpanded}
                 onFocusAccount={focusAccount}

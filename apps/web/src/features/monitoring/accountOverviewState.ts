@@ -1,4 +1,5 @@
 import type { AuthFileItem } from '@/types';
+import { isDisabledAuthFile } from '@/utils/quota';
 import { normalizeRecentRequestAuthIndex, type StatusBarData } from '@/utils/recentRequests';
 import type {
   MonitoringAccountRow,
@@ -75,7 +76,6 @@ export type MonitoringAccountOverviewUiState = {
 
 export type MonitoringAccountAuthState = {
   files: AuthFileItem[];
-  toggleableFileNames: string[];
   enabledState: MonitoringAccountEnabledState;
 };
 
@@ -607,8 +607,9 @@ export const buildMonitoringAccountAuthStateMap = (
         return set;
       }, new Set<string>());
 
-      const authIndices =
-        resolvedAuthIndices.size > 0 ? Array.from(resolvedAuthIndices).sort() : row.authIndices;
+      const authIndices = Array.from(
+        new Set([...row.authIndices, ...Array.from(resolvedAuthIndices)])
+      ).sort();
 
       return [row.id, buildMonitoringAccountAuthState(authIndices, authFilesByAuthIndex)] as const;
     })
@@ -635,7 +636,7 @@ export const buildMonitoringAccountAuthState = (
     .sort((left, right) => left.name.localeCompare(right.name));
 
   const toggleableFiles = files.filter((file) => !isRuntimeOnlyAuthFile(file));
-  const disabledCount = toggleableFiles.filter((file) => file.disabled === true).length;
+  const disabledCount = toggleableFiles.filter((file) => isDisabledAuthFile(file)).length;
   const enabledState: MonitoringAccountEnabledState =
     toggleableFiles.length === 0
       ? 'unavailable'
@@ -647,7 +648,6 @@ export const buildMonitoringAccountAuthState = (
 
   return {
     files,
-    toggleableFileNames: toggleableFiles.map((file) => file.name),
     enabledState,
   };
 };

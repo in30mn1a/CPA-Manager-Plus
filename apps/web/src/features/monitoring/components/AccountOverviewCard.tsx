@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
 import { Card } from '@/components/ui/Card';
-import { ToggleSwitch } from '@/components/ui/ToggleSwitch';
 import {
   IconChartLine,
   IconChevronDown,
@@ -775,10 +774,8 @@ export function AccountOverviewCard({
   statusData,
   scopeText,
   quotaState,
-  statusUpdating,
   onToggle,
   onFocus,
-  onToggleEnabled,
   onRefreshQuota,
 }: {
   row: MonitoringAccountRow;
@@ -792,16 +789,12 @@ export function AccountOverviewCard({
   statusData: StatusBarData;
   scopeText: string;
   quotaState?: AccountQuotaState;
-  statusUpdating: boolean;
   onToggle: () => void;
   onFocus: () => void;
-  onToggleEnabled: (enabled: boolean) => void;
   onRefreshQuota: () => void;
 }) {
   const summaryMetrics = buildAccountSummaryMetrics(row, hasPrices, locale, t);
   const cardMetrics = sortAccountOverviewCardMetrics(summaryMetrics);
-  const canToggleEnabled = authState.enabledState !== 'unavailable';
-  const toggleChecked = authState.enabledState === 'enabled';
   const statusTone = getAccountStatusTone(authState);
   const accountDisplay = resolveAccountDisplayText(row, accountDisplayMode);
   const secondaryText = accountDisplay.secondary || buildAccountSecondaryText(row);
@@ -833,38 +826,6 @@ export function AccountOverviewCard({
             statusTone={statusTone}
             showSecondary={false}
           />
-          <div className={styles.accountEnabledControl}>
-            <span className={styles.accountEnabledLabel}>
-              {t('monitoring.account_overview_enabled_label_short')}
-            </span>
-            {authState.enabledState === 'mixed' ? (
-              <div className={styles.accountOverviewToggleActions}>
-                <button
-                  type="button"
-                  className={styles.inlineActionButton}
-                  onClick={() => onToggleEnabled(true)}
-                  disabled={statusUpdating}
-                >
-                  {t('monitoring.account_overview_enable_all')}
-                </button>
-                <button
-                  type="button"
-                  className={styles.inlineActionButton}
-                  onClick={() => onToggleEnabled(false)}
-                  disabled={statusUpdating}
-                >
-                  {t('monitoring.account_overview_disable_all')}
-                </button>
-              </div>
-            ) : (
-              <ToggleSwitch
-                ariaLabel={t('monitoring.account_overview_enabled_label')}
-                checked={toggleChecked}
-                disabled={!canToggleEnabled || statusUpdating}
-                onChange={onToggleEnabled}
-              />
-            )}
-          </div>
         </div>
         <div className={styles.accountMetaRow}>
           {secondaryText ? (

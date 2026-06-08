@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode } from 'react';
 import type { TFunction } from 'i18next';
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/DropdownMenu';
+import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Input } from '@/components/ui/Input';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import {
@@ -71,7 +71,6 @@ type AccountOverviewPanelProps = {
   accountStatusDataByRowId: ReadonlyMap<string, StatusBarData>;
   emptyAccountStatusData: StatusBarData;
   accountQuotaStates: Record<string, AccountQuotaState>;
-  accountStatusUpdating: Record<string, boolean>;
   accountPageSize: number;
   accountPageSizeOptions: readonly number[];
   accountOverviewScopeText: string;
@@ -86,7 +85,6 @@ type AccountOverviewPanelProps = {
   onModeChange: (mode: MonitoringAccountOverviewMode) => void;
   onAccountDisplayModeChange: (mode: AccountDisplayMode) => void;
   onAccountSort: (sortKey: AccountSortKey) => void;
-  onAccountStatusToggle: (row: MonitoringAccountRow, enabled: boolean) => void | Promise<void>;
   onLoadAccountQuota: (account: string, force: boolean) => void | Promise<void>;
   onToggleExpanded: (rowId: string, account: string) => void;
   onFocusAccount: (row: MonitoringAccountRow) => void;
@@ -112,7 +110,6 @@ export type AccountOverviewPanelActionsProps = Pick<
 
 const EMPTY_ACCOUNT_AUTH_STATE: MonitoringAccountAuthState = {
   files: [],
-  toggleableFileNames: [],
   enabledState: 'unavailable',
 };
 
@@ -266,7 +263,6 @@ export function AccountOverviewPanel({
   accountStatusDataByRowId,
   emptyAccountStatusData,
   accountQuotaStates,
-  accountStatusUpdating,
   accountPageSize,
   accountPageSizeOptions,
   accountOverviewScopeText,
@@ -281,7 +277,6 @@ export function AccountOverviewPanel({
   onModeChange,
   onAccountDisplayModeChange,
   onAccountSort,
-  onAccountStatusToggle,
   onLoadAccountQuota,
   onToggleExpanded,
   onFocusAccount,
@@ -382,44 +377,13 @@ export function AccountOverviewPanel({
                 ]
                   .filter(Boolean)
                   .join(' ');
-                const accountMenuItems: DropdownMenuItem[] = [];
-                if (authState.enabledState === 'enabled') {
-                  accountMenuItems.push({
-                    key: 'disable',
-                    label: t('monitoring.account_overview_row_menu_disable'),
-                    onClick: () => void onAccountStatusToggle(row, false),
-                    disabled: accountStatusUpdating[row.id] === true,
-                    tone: 'danger',
-                  });
-                } else if (authState.enabledState === 'disabled') {
-                  accountMenuItems.push({
-                    key: 'enable',
-                    label: t('monitoring.account_overview_row_menu_enable'),
-                    onClick: () => void onAccountStatusToggle(row, true),
-                    disabled: accountStatusUpdating[row.id] === true,
-                  });
-                } else if (authState.enabledState === 'mixed') {
-                  accountMenuItems.push(
-                    {
-                      key: 'enable-all',
-                      label: t('monitoring.account_overview_row_menu_enable_all'),
-                      onClick: () => void onAccountStatusToggle(row, true),
-                      disabled: accountStatusUpdating[row.id] === true,
-                    },
-                    {
-                      key: 'disable-all',
-                      label: t('monitoring.account_overview_row_menu_disable_all'),
-                      onClick: () => void onAccountStatusToggle(row, false),
-                      disabled: accountStatusUpdating[row.id] === true,
-                      tone: 'danger',
-                    }
-                  );
-                }
-                accountMenuItems.push({
-                  key: 'refresh-quota',
-                  label: t('monitoring.account_overview_row_menu_refresh_quota'),
-                  onClick: () => void onLoadAccountQuota(row.account, true),
-                });
+                const accountMenuItems = [
+                  {
+                    key: 'refresh-quota',
+                    label: t('monitoring.account_overview_row_menu_refresh_quota'),
+                    onClick: () => void onLoadAccountQuota(row.account, true),
+                  },
+                ];
 
                 return (
                   <Fragment key={row.id}>
@@ -518,10 +482,8 @@ export function AccountOverviewPanel({
                 statusData={accountStatusDataByRowId.get(row.id) ?? emptyAccountStatusData}
                 scopeText={accountOverviewScopeText}
                 quotaState={accountQuotaStates[row.account]}
-                statusUpdating={accountStatusUpdating[row.id] === true}
                 onToggle={() => onToggleExpanded(row.id, row.account)}
                 onFocus={() => onFocusAccount(row)}
-                onToggleEnabled={(enabled) => void onAccountStatusToggle(row, enabled)}
                 onRefreshQuota={() => void onLoadAccountQuota(row.account, true)}
               />
             );
