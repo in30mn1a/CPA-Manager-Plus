@@ -41,6 +41,39 @@ const mountUseVisualConfig = (): UseVisualConfigHarness => {
 };
 
 describe('useVisualConfig', () => {
+  it('loads plugin system state from plugins.enabled', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = ['plugins:', '  enabled: true', ''].join('\n');
+
+    act(() => {
+      const result = harness.getCurrent().loadVisualValuesFromYaml(yaml);
+      expect(result.ok).toBe(true);
+    });
+
+    expect(harness.getCurrent().visualValues.pluginsEnabled).toBe(true);
+    harness.unmount();
+  });
+
+  it('writes plugins.enabled when enabling plugin system from visual editor', () => {
+    const harness = mountUseVisualConfig();
+    const yaml = ['host: 127.0.0.1', ''].join('\n');
+
+    act(() => {
+      const result = harness.getCurrent().loadVisualValuesFromYaml(yaml);
+      expect(result.ok).toBe(true);
+    });
+
+    act(() => {
+      harness.getCurrent().setVisualValues({ pluginsEnabled: true });
+    });
+
+    const savedYaml = harness.getCurrent().applyVisualChangesToYaml(yaml);
+    expect(savedYaml).toContain('plugins:');
+    expect(savedYaml).toContain('enabled: true');
+
+    harness.unmount();
+  });
+
   it('clears camelCase codex identityConfuse when disabling from visual editor', () => {
     const harness = mountUseVisualConfig();
     const yaml = [

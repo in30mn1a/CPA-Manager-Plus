@@ -83,6 +83,7 @@ export type VisualConfigValues = {
   rmPanelRepo: string;
   authDir: string;
   apiKeysText: string;
+  pluginsEnabled: boolean;
   debug: boolean;
   commercialMode: boolean;
   usageStatisticsEnabled: boolean;
@@ -145,6 +146,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   rmPanelRepo: '',
   authDir: '',
   apiKeysText: '',
+  pluginsEnabled: false,
   debug: false,
   commercialMode: false,
   usageStatisticsEnabled: false,

@@ -773,6 +773,13 @@ export function VisualConfigEditor({
                   onChange={(loggingToFile) => onChange({ loggingToFile })}
                 />
                 <ToggleRow
+                  title={t('config_management.visual.sections.system.plugins_enabled')}
+                  description={t('config_management.visual.sections.system.plugins_enabled_desc')}
+                  checked={values.pluginsEnabled}
+                  disabled={disabled}
+                  onChange={(pluginsEnabled) => onChange({ pluginsEnabled })}
+                />
+                <ToggleRow
                   title={t('config_management.visual.sections.system.antigravity_signature_cache')}
                   description={t(
                     'config_management.visual.sections.system.antigravity_signature_cache_desc'

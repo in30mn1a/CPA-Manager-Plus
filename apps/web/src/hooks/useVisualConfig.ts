@@ -308,6 +308,7 @@ function getNextDirtyFields(
     [
       'rmDisableAutoUpdatePanel',
       'errorLogsMaxFiles',
+      'pluginsEnabled',
       'passthroughHeaders',
       'disableCooling',
       'disableImageGeneration',
@@ -587,6 +588,7 @@ export function useVisualConfig() {
       const remoteManagement = asRecord(parsed['remote-management']);
       const quotaExceeded = asRecord(parsed['quota-exceeded']);
       const routing = asRecord(parsed.routing);
+      const plugins = asRecord(parsed.plugins);
       const payload = asRecord(parsed.payload);
       const streaming = asRecord(parsed.streaming);
       const claudeHeaderDefaults = asRecord(parsed['claude-header-defaults']);
@@ -617,6 +619,7 @@ export function useVisualConfig() {
 
         authDir: typeof parsed['auth-dir'] === 'string' ? parsed['auth-dir'] : '',
         apiKeysText: resolveApiKeysText(parsed),
+        pluginsEnabled: Boolean(plugins?.enabled),
 
         debug: Boolean(parsed.debug),
         commercialMode: Boolean(parsed['commercial-mode']),
@@ -804,6 +807,16 @@ export function useVisualConfig() {
             ['redis-usage-queue-retention-seconds'],
             values.redisUsageQueueRetentionSeconds
           );
+        }
+
+        if (
+          docHas(doc, ['plugins']) ||
+          values.pluginsEnabled ||
+          shouldWriteManagedField(doc, ['plugins', 'enabled'], dirtyFields, 'pluginsEnabled')
+        ) {
+          ensureMapInDoc(doc, ['plugins']);
+          setBooleanInDoc(doc, ['plugins', 'enabled'], values.pluginsEnabled);
+          deleteIfMapEmpty(doc, ['plugins']);
         }
 
         setStringInDoc(doc, ['proxy-url'], values.proxyUrl);
