@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import {
-  AmpcodeSection,
   buildProviderRows,
+  ClaudeEditDrawer,
+  CodexEditDrawer,
   filterAndSortProviderRows,
+  GeminiEditDrawer,
+  OpenAIEditDrawer,
   PROVIDER_KIND_LABELS,
   ProviderDetailDrawer,
   ProviderHealthCheckDrawer,
   ProviderTable,
   ProviderToolbar,
+  VertexEditDrawer,
   useProviderRecentRequests,
   type ProviderHealthCheckApplyAction,
   type ProviderKind,
@@ -28,7 +31,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Select } from '@/components/ui/Select';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { ampcodeApi, providersApi } from '@/services/api';
+import { providersApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore, useThemeStore } from '@/stores';
 import type { CloakConfig, GeminiKeyConfig, OpenAIProviderConfig, ProviderKeyConfig } from '@/types';
 import styles from './AiProvidersPage.module.scss';
@@ -44,7 +47,6 @@ const DEFAULT_CLOAK_CONFIG: CloakConfig = {
 
 export function AiProvidersPage() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { showNotification, showConfirmation } = useNotificationStore();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
@@ -85,6 +87,8 @@ export function AiProvidersPage() {
   const [sortDirection, setSortDirection] = useState<ProviderSortDirection>('desc');
   const [detailRowKey, setDetailRowKey] = useState<string | null>(null);
   const [healthCheckOpen, setHealthCheckOpen] = useState(false);
+  const [editDrawerKind, setEditDrawerKind] = useState<ProviderKind | null>(null);
+  const [editDrawerIndex, setEditDrawerIndex] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(PROVIDER_TABLE_DEFAULT_PAGE_SIZE);
 
@@ -112,10 +116,9 @@ export function AiProvidersPage() {
     }
     setError('');
     try {
-      const [configResult, vertexResult, ampcodeResult, openaiResult] = await Promise.allSettled([
+      const [configResult, vertexResult, openaiResult] = await Promise.allSettled([
         fetchConfig(),
         providersApi.getVertexConfigs(),
-        ampcodeApi.getAmpcode(),
         providersApi.getOpenAIProviders(),
       ]);
 
@@ -134,11 +137,6 @@ export function AiProvidersPage() {
         setVertexConfigs(vertexResult.value || []);
         updateConfigValue('vertex-api-key', vertexResult.value || []);
         clearCache('vertex-api-key');
-      }
-
-      if (ampcodeResult.status === 'fulfilled') {
-        updateConfigValue('ampcode', ampcodeResult.value);
-        clearCache('ampcode');
       }
 
       if (openaiResult.status === 'fulfilled') {
@@ -185,12 +183,20 @@ export function AiProvidersPage() {
 
   useHeaderRefresh(handleRecentRequestsRefresh, isCurrentLayer);
 
-  const openEditor = useCallback(
-    (path: string) => {
-      navigate(path, { state: { fromAiProviders: true } });
-    },
-    [navigate]
-  );
+  const openEditorDrawer = useCallback((kind: ProviderKind, editIndex: number | null) => {
+    setDetailRowKey(null);
+    setEditDrawerKind(kind);
+    setEditDrawerIndex(editIndex);
+  }, []);
+
+  const closeEditorDrawer = useCallback(() => {
+    setEditDrawerKind(null);
+    setEditDrawerIndex(null);
+  }, []);
+
+  const handleDrawerSaved = useCallback(() => {
+    void loadConfigs();
+  }, [loadConfigs]);
 
   // 统一行集合与派生数据
   const rows = useMemo(
@@ -815,7 +821,7 @@ export function AiProvidersPage() {
 
   const handleRowEdit = (row: ProviderRow) => {
     setDetailRowKey(null);
-    openEditor(`/ai-providers/${row.kind}/${row.originalIndex}`);
+    openEditorDrawer(row.kind, row.originalIndex);
   };
 
   const handleRowDelete = (row: ProviderRow) => {
@@ -832,7 +838,7 @@ export function AiProvidersPage() {
   };
 
   const handleAdd = (kind: ProviderKind) => {
-    openEditor(`/ai-providers/${kind}/new`);
+    openEditorDrawer(kind, null);
   };
 
   const handlePageSizeChange = (value: string) => {
@@ -964,14 +970,6 @@ export function AiProvidersPage() {
             )}
           </Card>
         </div>
-
-        <AmpcodeSection
-          config={config?.ampcode}
-          loading={loading}
-          disableControls={disableControls}
-          isSwitching={isSwitching}
-          onEdit={() => openEditor('/ai-providers/ampcode')}
-        />
       </div>
 
       <ProviderDetailDrawer
@@ -995,6 +993,41 @@ export function AiProvidersPage() {
         onClose={() => setHealthCheckOpen(false)}
         onApplyResultActions={applyProviderEnabledActions}
         onSetProviderEnabled={setHealthCheckProviderEnabled}
+      />
+      <GeminiEditDrawer
+        open={editDrawerKind === 'gemini'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+      />
+      <CodexEditDrawer
+        open={editDrawerKind === 'codex'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+      />
+      <VertexEditDrawer
+        open={editDrawerKind === 'vertex'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+      />
+      <ClaudeEditDrawer
+        open={editDrawerKind === 'claude'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
+      />
+      <OpenAIEditDrawer
+        open={editDrawerKind === 'openai'}
+        editIndex={editDrawerIndex}
+        disabled={actionsDisabled}
+        onClose={closeEditorDrawer}
+        onSaved={handleDrawerSaved}
       />
     </div>
   );
