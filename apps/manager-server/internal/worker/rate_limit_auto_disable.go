@@ -351,6 +351,9 @@ func codexUsageLimitResetTimeFromEvent(event usage.Event, now time.Time) (time.T
 	if provider != "codex" {
 		return time.Time{}, false
 	}
+	if resetAt, ok := codexUsageLimitResetTimeFromHeaders(event, now); ok {
+		return resetAt, true
+	}
 	for _, text := range []string{event.FailBody, event.RawJSON, event.FailSummary} {
 		var resetAt time.Time
 		found := false
@@ -367,6 +370,91 @@ func codexUsageLimitResetTimeFromEvent(event usage.Event, now time.Time) (time.T
 		}
 	}
 	return time.Time{}, false
+}
+
+func codexUsageLimitResetTimeFromHeaders(event usage.Event, now time.Time) (time.Time, bool) {
+	metadata := event.ResponseMetadata
+	if metadata == nil && event.ResponseMetadataJSON != "" {
+		metadata = usage.ResponseHeaderMetadataFromJSON(event.ResponseMetadataJSON)
+	}
+	if metadata == nil {
+		return time.Time{}, false
+	}
+	resetAtMS := int64(0)
+	if !codexUsageLimitSignalFromHeaders(event, metadata) {
+		return time.Time{}, false
+	}
+	if metadata.Quota != nil {
+		switch strings.ToLower(strings.TrimSpace(metadata.Quota.RateLimitReachedType)) {
+		case "primary":
+			resetAtMS = quotaWindowResetAtMS(metadata.Quota.Primary)
+		case "secondary":
+			resetAtMS = quotaWindowResetAtMS(metadata.Quota.Secondary)
+		}
+		if resetAtMS <= 0 {
+			resetAtMS = metadata.Quota.RecoverAtMS
+		}
+		if resetAtMS <= 0 {
+			resetAtMS = maxInt64(
+				quotaWindowResetAtMS(metadata.Quota.Primary),
+				quotaWindowResetAtMS(metadata.Quota.Secondary),
+			)
+		}
+	}
+	if resetAtMS <= 0 && metadata.Errors != nil {
+		resetAtMS = metadata.Errors.RetryAfterRecoverAtMS
+	}
+	if resetAtMS <= 0 {
+		return time.Time{}, false
+	}
+	resetAt := time.UnixMilli(resetAtMS)
+	return resetAt, resetAt.After(now)
+}
+
+func codexUsageLimitSignalFromHeaders(event usage.Event, metadata *usage.ResponseHeaderMetadata) bool {
+	if metadata == nil {
+		return false
+	}
+	if metadata.Quota != nil && strings.TrimSpace(metadata.Quota.RateLimitReachedType) != "" {
+		return true
+	}
+	values := []string{event.HeaderErrorKind, event.HeaderErrorCode}
+	if metadata.Errors != nil {
+		values = append(
+			values,
+			metadata.Errors.Kind,
+			metadata.Errors.Code,
+			metadata.Errors.AuthorizationError,
+			metadata.Errors.IDEErrorCode,
+			metadata.Errors.IDERootErrorCode,
+		)
+	}
+	for _, value := range values {
+		if isCodexUsageLimitSignalText(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexUsageLimitSignalText(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return strings.Contains(normalized, "usage_limit_reached")
+}
+
+func quotaWindowResetAtMS(window *usage.HeaderQuotaWindow) int64 {
+	if window == nil {
+		return 0
+	}
+	return window.ResetAtMS
+}
+
+func maxInt64(left int64, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 // forEachJSONValue decodes every JSON value found in text, calling fn for each.

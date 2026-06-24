@@ -94,6 +94,54 @@ func TestQuotaAutoDisableCandidateRequiresStrictCodexUsageLimit(t *testing.T) {
 	}
 }
 
+func TestQuotaAutoDisableCandidateUsesResponseHeaderReset(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	event := usage.Event{
+		EventHash:        "evt-header-quota",
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		AuthFileSnapshot: "codex-auth.json",
+		AuthIndex:        "auth-1",
+		AccountSnapshot:  "user@example.com",
+		Provider:         "codex",
+		ResponseMetadata: usage.ParseResponseHeaderMetadata(map[string]any{
+			"Retry-After":                     []any{"90"},
+			"x-codex-rate-limit-reached-type": []any{"primary"},
+		}, now),
+		HeaderErrorKind: "rate_limit",
+		HeaderErrorCode: "retry_after",
+		HeaderTraceID:   "req-header",
+	}
+	candidate, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now)
+	if !ok {
+		t.Fatal("candidate not detected")
+	}
+	if got := candidate.ResetAt.Unix(); got != now.Add(90*time.Second).Unix() {
+		t.Fatalf("reset unix = %d", got)
+	}
+}
+
+func TestQuotaAutoDisableCandidateIgnoresGenericRetryAfterHeader(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	event := usage.Event{
+		EventHash:        "evt-generic-retry-after",
+		Failed:           true,
+		FailStatusCode:   http.StatusTooManyRequests,
+		AuthFileSnapshot: "codex-auth.json",
+		AuthIndex:        "auth-1",
+		AccountSnapshot:  "user@example.com",
+		Provider:         "codex",
+		ResponseMetadata: usage.ParseResponseHeaderMetadata(map[string]any{"Retry-After": []any{"90"}}, now),
+		HeaderErrorKind:  "rate_limit",
+		HeaderErrorCode:  "retry_after",
+		HeaderTraceID:    "req-header",
+	}
+
+	if _, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now); ok {
+		t.Fatal("generic Retry-After header should not create auto-disable candidate")
+	}
+}
+
 func TestRateLimitAutoDisableWorkerRecoversDueCooldownFromManagerRuntimeConfigAfterRestart(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
