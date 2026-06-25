@@ -1,4 +1,5 @@
 import type { AuthFileItem } from '@/types';
+import type { SourceProviderEnabledState } from '@/types/sourceInfo';
 import { isDisabledAuthFile } from '@/utils/quota';
 import { normalizeRecentRequestAuthIndex, type StatusBarData } from '@/utils/recentRequests';
 import type {
@@ -556,18 +557,29 @@ export const buildMonitoringAccountStatusDataMap = (
 
 export const buildMonitoringAccountAuthStateMap = (
   rows: MonitoringAccountRow[],
-  authFilesByAuthIndex: Map<string, AuthFileItem>
+  authFilesByAuthIndex: Map<string, AuthFileItem>,
+  sourceProviderStateBySourceKey: Map<string, SourceProviderEnabledState> = new Map()
 ) =>
   new Map(
     rows.map(
       (row) =>
-        [row.id, buildMonitoringAccountAuthState(row.authIndices, authFilesByAuthIndex)] as const
+        [
+          row.id,
+          buildMonitoringAccountAuthState(
+            row.authIndices,
+            authFilesByAuthIndex,
+            row.sourceKeys ?? [],
+            sourceProviderStateBySourceKey
+          ),
+        ] as const
     )
   );
 
 export const buildMonitoringAccountAuthState = (
   authIndices: string[],
-  authFilesByAuthIndex: Map<string, AuthFileItem>
+  authFilesByAuthIndex: Map<string, AuthFileItem>,
+  sourceKeys: string[] = [],
+  sourceProviderStateBySourceKey: Map<string, SourceProviderEnabledState> = new Map()
 ): MonitoringAccountAuthState => {
   const files = Array.from(
     authIndices.reduce<Map<string, AuthFileItem>>((map, authIndex) => {
@@ -585,14 +597,20 @@ export const buildMonitoringAccountAuthState = (
     .sort((left, right) => left.name.localeCompare(right.name));
 
   const toggleableFiles = files.filter((file) => !isRuntimeOnlyAuthFile(file));
-  const disabledCount = toggleableFiles.filter((file) => isDisabledAuthFile(file)).length;
+  const enabledStates: SourceProviderEnabledState[] = [
+    ...toggleableFiles.map((file) => (isDisabledAuthFile(file) ? 'disabled' : 'enabled')),
+    ...sourceKeys.flatMap((sourceKey) => {
+      const providerState = sourceProviderStateBySourceKey.get(sourceKey);
+      return providerState ? [providerState] : [];
+    }),
+  ];
   const enabledState: MonitoringAccountEnabledState =
-    toggleableFiles.length === 0
+    enabledStates.length === 0
       ? 'unavailable'
-      : disabledCount === toggleableFiles.length
-        ? 'disabled'
-        : disabledCount === 0
-          ? 'enabled'
+      : enabledStates.every((state) => state === 'enabled')
+        ? 'enabled'
+        : enabledStates.every((state) => state === 'disabled')
+          ? 'disabled'
           : 'mixed';
 
   return {

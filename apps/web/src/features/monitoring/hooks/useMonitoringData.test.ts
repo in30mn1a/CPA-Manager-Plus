@@ -245,11 +245,13 @@ describe('buildAccountRows', () => {
         timestampMs: Date.parse('2026-05-09T02:12:43.000Z'),
         authIndex: 'auth-999999',
         authIndexMasked: 'auth...9999',
+        sourceKey: 'source:beta',
       }),
     ]);
 
     expect(rows).toHaveLength(1);
     expect(rows[0].authIndices).toEqual(['auth-123456', 'auth-999999']);
+    expect(rows[0].sourceKeys).toEqual(['source:alpha', 'source:beta']);
   });
 });
 

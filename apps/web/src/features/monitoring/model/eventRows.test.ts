@@ -29,7 +29,7 @@ const buildRows = (overrides: Partial<UsageDetailWithEndpoint> = {}) =>
     ],
     new Map(),
     new Map(),
-    { byAuthIndex: new Map(), bySource: new Map() },
+    { byAuthIndex: new Map(), bySource: new Map(), byIdentityKey: new Map() },
     new Map(),
     {},
     new Map()
