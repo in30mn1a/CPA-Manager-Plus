@@ -91,6 +91,10 @@ const createPresentationSnapshot = (id: string): MonitoringPresentationSnapshot 
       providers: [row.provider],
       models: [row.model],
       channels: [row.channel],
+      headerErrorKinds: [],
+      headerErrorCodes: [],
+      headerQuotaPlans: [],
+      headerTraceIds: [],
     },
     filteredRows: [row],
     eventsHasMore: id.includes('more'),
@@ -455,9 +459,10 @@ describe('buildScopeFilteredRows', () => {
       }),
     ];
 
-    expect(
-      buildScopeFilteredRows(rows, { minLatencyMs: 10_000 }).map((row) => row.id)
-    ).toEqual(['slow-cache-hit', 'slow-cache-miss']);
+    expect(buildScopeFilteredRows(rows, { minLatencyMs: 10_000 }).map((row) => row.id)).toEqual([
+      'slow-cache-hit',
+      'slow-cache-miss',
+    ]);
     expect(buildScopeFilteredRows(rows, { cacheStatus: 'hit' }).map((row) => row.id)).toEqual([
       'fast-cache-hit',
       'slow-cache-hit',

@@ -65,6 +65,10 @@ export type AccountOverviewPageResetState = {
   selectedAccount: string;
   selectedApiKeyHash: string;
   selectedChannel: string;
+  selectedHeaderErrorCode: string;
+  selectedHeaderErrorKind: string;
+  selectedHeaderQuotaPlan: string;
+  selectedHeaderTraceId: string;
   selectedModel: string;
   selectedProvider: string;
   selectedStatus: string;
@@ -265,6 +269,10 @@ export const shouldResetAccountOverviewPage = (
     previous.selectedAccount !== next.selectedAccount ||
     previous.selectedApiKeyHash !== next.selectedApiKeyHash ||
     previous.selectedChannel !== next.selectedChannel ||
+    previous.selectedHeaderErrorCode !== next.selectedHeaderErrorCode ||
+    previous.selectedHeaderErrorKind !== next.selectedHeaderErrorKind ||
+    previous.selectedHeaderQuotaPlan !== next.selectedHeaderQuotaPlan ||
+    previous.selectedHeaderTraceId !== next.selectedHeaderTraceId ||
     previous.selectedModel !== next.selectedModel ||
     previous.selectedProvider !== next.selectedProvider ||
     previous.selectedStatus !== next.selectedStatus ||
