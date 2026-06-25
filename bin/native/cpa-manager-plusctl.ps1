@@ -3,12 +3,12 @@ $ErrorActionPreference = 'Stop'
 $AppName = 'cpa-manager-plus'
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Binary = if ($env:CPA_MANAGER_PLUS_BIN) { $env:CPA_MANAGER_PLUS_BIN } else { Join-Path $ScriptDir "$AppName.exe" }
-$BinaryName = [System.IO.Path]::GetFileName($Binary)
 $RunDir = if ($env:CPA_MANAGER_PLUS_RUN_DIR) { $env:CPA_MANAGER_PLUS_RUN_DIR } else { Join-Path $ScriptDir 'run' }
 $LogDir = if ($env:CPA_MANAGER_PLUS_LOG_DIR) { $env:CPA_MANAGER_PLUS_LOG_DIR } else { Join-Path $ScriptDir 'logs' }
 $PidFile = if ($env:CPA_MANAGER_PLUS_PID_FILE) { $env:CPA_MANAGER_PLUS_PID_FILE } else { Join-Path $RunDir "$AppName.pid" }
 $LogFile = if ($env:CPA_MANAGER_PLUS_LOG_FILE) { $env:CPA_MANAGER_PLUS_LOG_FILE } else { Join-Path $LogDir "$AppName.log" }
 $ErrLogFile = if ($env:CPA_MANAGER_PLUS_ERR_LOG_FILE) { $env:CPA_MANAGER_PLUS_ERR_LOG_FILE } else { Join-Path $LogDir "$AppName.err.log" }
+$CurrentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 
 function Show-Usage {
   Write-Host @"
@@ -31,62 +31,244 @@ Environment overrides:
 "@
 }
 
-function Get-RecordedPid {
+function Resolve-NormalizedPath {
+  param([string]$Path)
+
+  try {
+    return [System.IO.Path]::GetFullPath($Path)
+  } catch {
+    return $Path
+  }
+}
+
+function Set-PrivateAcl {
+  param(
+    [string]$Path,
+    [switch]$Directory
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  $inheritFlags = if ($Directory) {
+    [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+  } else {
+    [System.Security.AccessControl.InheritanceFlags]::None
+  }
+
+  $acl = if ($Directory) {
+    New-Object System.Security.AccessControl.DirectorySecurity
+  } else {
+    New-Object System.Security.AccessControl.FileSecurity
+  }
+
+  $acl.SetOwner($CurrentUserSid)
+  $acl.SetAccessRuleProtection($true, $false)
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $CurrentUserSid,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    $inheritFlags,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+  [void]$acl.AddAccessRule($rule)
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Ensure-PrivateDirectory {
+  param(
+    [string]$Path,
+    [switch]$ManageExisting
+  )
+
+  if (-not $Path) {
+    return
+  }
+
+  if (Test-Path -LiteralPath $Path) {
+    if ($ManageExisting) {
+      Set-PrivateAcl -Path $Path -Directory
+    }
+    return
+  }
+
+  New-Item -ItemType Directory -Force -Path $Path | Out-Null
+  Set-PrivateAcl -Path $Path -Directory
+}
+
+function Prepare-PrivateFile {
+  param([string]$Path)
+
+  $parent = Split-Path -Parent $Path
+  if ($parent) {
+    $normalizedParent = Resolve-NormalizedPath $parent
+    $normalizedRunDir = Resolve-NormalizedPath $RunDir
+    $normalizedLogDir = Resolve-NormalizedPath $LogDir
+
+    if ($normalizedParent -ieq $normalizedRunDir -or $normalizedParent -ieq $normalizedLogDir) {
+      Ensure-PrivateDirectory -Path $parent -ManageExisting
+    } else {
+      Ensure-PrivateDirectory -Path $parent
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    New-Item -ItemType File -Force -Path $Path | Out-Null
+  }
+
+  Set-PrivateAcl -Path $Path
+}
+
+function Get-ProcessSnapshot {
+  param([int]$ProcessId)
+
+  try {
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+  } catch {
+    return $null
+  }
+
+  $startTimeUtc = $null
+  try {
+    $startTimeUtc = $process.StartTime.ToUniversalTime().ToString('o')
+  } catch {
+  }
+
+  $cimProcess = $null
+  try {
+    $cimProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+  } catch {
+  }
+
+  $binaryPath = $null
+  if ($cimProcess -and $cimProcess.ExecutablePath) {
+    $binaryPath = Resolve-NormalizedPath $cimProcess.ExecutablePath
+  } else {
+    try {
+      $binaryPath = Resolve-NormalizedPath $process.MainModule.FileName
+    } catch {
+    }
+  }
+
+  $commandLine = $null
+  if ($cimProcess -and $cimProcess.CommandLine) {
+    $commandLine = $cimProcess.CommandLine.Trim()
+  }
+
+  [pscustomobject]@{
+    Pid          = $process.Id
+    StartTimeUtc = $startTimeUtc
+    BinaryPath   = $binaryPath
+    CommandLine  = $commandLine
+    Process      = $process
+  }
+}
+
+function Read-PidRecord {
   if (-not (Test-Path -LiteralPath $PidFile)) {
     return $null
   }
 
   $raw = (Get-Content -LiteralPath $PidFile -Raw).Trim()
   if (-not $raw) {
-    return $null
+    return [pscustomobject]@{ Format = 'invalid' }
+  }
+
+  if ($raw -match '^\d+$') {
+    return [pscustomobject]@{
+      Format = 'legacy'
+      Pid = [int]$raw
+    }
+  }
+
+  try {
+    $record = $raw | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return [pscustomobject]@{ Format = 'invalid' }
   }
 
   $pidValue = 0
-  if ([int]::TryParse($raw, [ref]$pidValue)) {
-    return $pidValue
+  if (-not [int]::TryParse([string]$record.pid, [ref]$pidValue)) {
+    return [pscustomobject]@{ Format = 'invalid' }
   }
 
-  return $null
-}
-
-function Get-RunningProcess {
-  $pidValue = Get-RecordedPid
-  if (-not $pidValue) {
-    return $null
-  }
-
-  try {
-    return Get-Process -Id $pidValue -ErrorAction Stop
-  } catch {
-    return $null
+  [pscustomobject]@{
+    Format       = 'metadata'
+    Pid          = $pidValue
+    StartTimeUtc = [string]$record.startTimeUtc
+    BinaryPath   = [string]$record.binaryPath
+    CommandLine  = [string]$record.commandLine
   }
 }
 
-function Test-ProcessMatchesBinary {
-  param([System.Diagnostics.Process]$Process)
+function Get-PidRecordState {
+  if (-not (Test-Path -LiteralPath $PidFile)) {
+    return [pscustomobject]@{ State = 'missing' }
+  }
 
-  if (-not $Process) {
+  $record = Read-PidRecord
+  if (-not $record -or $record.Format -eq 'invalid') {
+    return [pscustomobject]@{ State = 'invalid'; Record = $record }
+  }
+
+  $snapshot = Get-ProcessSnapshot -ProcessId $record.Pid
+  if (-not $snapshot) {
+    return [pscustomobject]@{ State = 'stale'; Record = $record }
+  }
+
+  if ($record.Format -ne 'metadata' -or -not $record.StartTimeUtc) {
+    return [pscustomobject]@{ State = 'conflict'; Record = $record; Snapshot = $snapshot }
+  }
+
+  if (-not $snapshot.StartTimeUtc -or $snapshot.StartTimeUtc -ne $record.StartTimeUtc) {
+    return [pscustomobject]@{ State = 'conflict'; Record = $record; Snapshot = $snapshot }
+  }
+
+  if ($record.BinaryPath -and $snapshot.BinaryPath) {
+    if ((Resolve-NormalizedPath $snapshot.BinaryPath) -ieq (Resolve-NormalizedPath $record.BinaryPath)) {
+      return [pscustomobject]@{ State = 'active'; Record = $record; Snapshot = $snapshot }
+    }
+
+    return [pscustomobject]@{ State = 'conflict'; Record = $record; Snapshot = $snapshot }
+  }
+
+  if ($record.CommandLine -and $snapshot.CommandLine -and $record.CommandLine -eq $snapshot.CommandLine) {
+    return [pscustomobject]@{ State = 'active'; Record = $record; Snapshot = $snapshot }
+  }
+
+  return [pscustomobject]@{ State = 'conflict'; Record = $record; Snapshot = $snapshot }
+}
+
+function Write-PidRecord {
+  param([int]$ProcessId)
+
+  $snapshot = Get-ProcessSnapshot -ProcessId $ProcessId
+  if (-not $snapshot -or -not $snapshot.StartTimeUtc -or (-not $snapshot.BinaryPath -and -not $snapshot.CommandLine)) {
     return $false
   }
 
-  try {
-    $path = $Process.MainModule.FileName
-    if ($path) {
-      return ([System.IO.Path]::GetFullPath($path) -ieq [System.IO.Path]::GetFullPath($Binary))
-    }
-  } catch {
+  $tmpFile = "${PidFile}.tmp.$PID"
+  $record = [pscustomobject]@{
+    pid          = $snapshot.Pid
+    startTimeUtc = $snapshot.StartTimeUtc
+    binaryPath   = $snapshot.BinaryPath
+    commandLine  = $snapshot.CommandLine
   }
 
-  return ($Process.ProcessName -ieq [System.IO.Path]::GetFileNameWithoutExtension($BinaryName))
+  Prepare-PrivateFile -Path $tmpFile
+  $record | ConvertTo-Json -Compress | Set-Content -LiteralPath $tmpFile
+  Set-PrivateAcl -Path $tmpFile
+  Move-Item -LiteralPath $tmpFile -Destination $PidFile -Force
+  Set-PrivateAcl -Path $PidFile
+  return $true
 }
 
-function Get-MatchingProcess {
-  $process = Get-RunningProcess
-  if ($process -and (Test-ProcessMatchesBinary -Process $process)) {
-    return $process
-  }
-
-  return $null
+function Prepare-RuntimePaths {
+  Ensure-PrivateDirectory -Path $RunDir -ManageExisting
+  Ensure-PrivateDirectory -Path $LogDir -ManageExisting
+  Prepare-PrivateFile -Path $LogFile
+  Prepare-PrivateFile -Path $ErrLogFile
 }
 
 function Start-App {
@@ -96,13 +278,26 @@ function Start-App {
     throw "Binary does not exist: $Binary"
   }
 
-  $process = Get-MatchingProcess
-  if ($process) {
-    Write-Host "$AppName is already running with PID $($process.Id)"
-    return
+  $state = Get-PidRecordState
+  switch ($state.State) {
+    'active' {
+      Write-Host "$AppName is already running with PID $($state.Record.Pid)"
+      return
+    }
+    'stale' {
+      Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+    }
+    'invalid' {
+      Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+    }
+    'conflict' {
+      throw "Refusing to start: $PidFile points to a running process that could not be strongly verified."
+    }
   }
 
-  New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
+  Prepare-RuntimePaths
+  Prepare-PrivateFile -Path $PidFile
+  Clear-Content -LiteralPath $PidFile -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
 
   $startInfo = @{
@@ -118,63 +313,81 @@ function Start-App {
   }
 
   $process = Start-Process @startInfo
-  Set-Content -LiteralPath $PidFile -Value $process.Id
   Start-Sleep -Seconds 1
 
-  if (Get-MatchingProcess) {
+  if ((Write-PidRecord -ProcessId $process.Id) -and (Get-PidRecordState).State -eq 'active') {
     Write-Host "$AppName started with PID $($process.Id)"
     Write-Host "Log: $LogFile"
     Write-Host "Error log: $ErrLogFile"
     return
   }
 
+  Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
   Write-Error "$AppName failed to start. Check logs: $LogFile and $ErrLogFile"
 }
 
 function Stop-App {
-  $pidValue = Get-RecordedPid
-  if (-not $pidValue) {
-    Write-Host "$AppName is not running"
-    return
+  $state = Get-PidRecordState
+  switch ($state.State) {
+    'missing' {
+      Write-Host "$AppName is not running"
+      return
+    }
+    'stale' {
+      Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed stale PID file for $AppName"
+      return
+    }
+    'invalid' {
+      Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed stale PID file for $AppName"
+      return
+    }
+    'conflict' {
+      throw "Refusing to stop: $PidFile points to a running process that could not be strongly verified."
+    }
   }
 
-  $process = Get-MatchingProcess
-  if (-not $process) {
-    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
-    Write-Host "Removed stale PID file for $AppName"
-    return
-  }
-
-  Stop-Process -Id $process.Id
+  Stop-Process -Id $state.Snapshot.Pid
   for ($i = 0; $i -lt 10; $i++) {
     Start-Sleep -Seconds 1
-    if (-not (Get-MatchingProcess)) {
+    if ((Get-PidRecordState).State -ne 'active') {
       Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
       Write-Host "$AppName stopped"
       return
     }
   }
 
-  throw "$AppName did not stop within 10 seconds. PID: $($process.Id)"
+  throw "$AppName did not stop within 10 seconds. PID: $($state.Snapshot.Pid)"
 }
 
 function Show-Status {
-  $process = Get-MatchingProcess
-  if ($process) {
-    Write-Host "$AppName is running with PID $($process.Id)"
-    Write-Host "PID file: $PidFile"
-    Write-Host "Log: $LogFile"
-    return
+  $state = Get-PidRecordState
+  switch ($state.State) {
+    'active' {
+      Write-Host "$AppName is running with PID $($state.Record.Pid)"
+      Write-Host "PID file: $PidFile"
+      Write-Host "Log: $LogFile"
+      return
+    }
+    'missing' {
+      Write-Host "$AppName is not running"
+      exit 1
+    }
+    'stale' {
+      Write-Host "$AppName is not running; stale PID file: $PidFile"
+      exit 1
+    }
+    'invalid' {
+      Write-Host "$AppName is not running; stale PID file: $PidFile"
+      exit 1
+    }
+    'conflict' {
+      Write-Host "$AppName status is unknown; $PidFile points to a running process that could not be strongly verified."
+      exit 1
+    }
   }
-
-  if (Test-Path -LiteralPath $PidFile) {
-    Write-Host "$AppName is not running; stale PID file: $PidFile"
-    exit 1
-  }
-
-  Write-Host "$AppName is not running"
-  exit 1
 }
 
 function Show-Logs {
