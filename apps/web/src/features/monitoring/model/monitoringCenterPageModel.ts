@@ -4,10 +4,10 @@ import type {
   AuthFileItem,
   ClaudeQuotaWindow,
   CodexQuotaWindow,
-  GeminiCliQuotaBucketState,
   KimiQuotaRow,
   XaiBillingSummary,
 } from '@/types';
+import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import type {
   MonitoringAccountRow,
   MonitoringApiKeyRow,
@@ -38,13 +38,22 @@ import {
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
-  fetchGeminiCliCodeAssist,
-  fetchGeminiCliQuotaBuckets,
   fetchKimiQuota,
   fetchXaiQuota,
+  buildCodexQuotaWindowInfos,
   formatKimiResetHint,
   formatQuotaResetTime,
 } from '@/utils/quota';
+import {
+  buildObservedCodexQuotaFromHeaderSnapshot,
+  getHeaderSnapshotErrorCode,
+  getHeaderSnapshotErrorKind,
+  getHeaderSnapshotPlanType,
+  getHeaderSnapshotRecoverAtMs,
+  getHeaderSnapshotTraceId,
+  getHeaderSnapshotUsedPercent,
+  hasUsageHeaderQuotaSignal,
+} from '@/utils/usageHeaderSnapshots';
 import {
   formatCompactNumber,
   formatDurationMs,
@@ -63,6 +72,7 @@ export type FocusSnapshot = {
   selectedChannel: string;
   selectedApiKeyHash: string;
   selectedStatus: StatusFilter;
+  selectedHeaderTraceId: string;
 };
 
 export type PriceDraft = {
@@ -152,9 +162,15 @@ export const buildMonitoringInitialStateFromQuery = (
   const searchQuery = params.get('search')?.trim();
   const minLatencyMs = params.get('min_latency_ms')?.trim();
   const cacheStatus = params.get('cache_status')?.trim();
+  const headerTraceId = params.get('header_trace_id')?.trim();
   const hasRange = fromMs !== null && toMs !== null && fromMs < toMs;
   const hasStructuredScopeFilter = Boolean(
-    authFile || projectId || requestType || minLatencyMs || cacheStatus
+    authFile ||
+    projectId ||
+    requestType ||
+    minLatencyMs ||
+    cacheStatus ||
+    headerTraceId
   );
 
   return {
@@ -167,13 +183,20 @@ export const buildMonitoringInitialStateFromQuery = (
     selectedModel: model || state.selectedModel,
     selectedProvider: provider || state.selectedProvider,
     selectedApiKeyHash: apiKeyHash || state.selectedApiKeyHash,
+    selectedHeaderTraceId: headerTraceId || state.selectedHeaderTraceId,
     selectedStatus:
       status === 'success' || status === 'failed' || status === 'all'
         ? status
         : state.selectedStatus,
     searchInput: searchQuery || state.searchInput,
     activeDataTab:
-      hasRange || model || apiKeyHash || status || provider || searchQuery || hasStructuredScopeFilter
+      hasRange ||
+      model ||
+      apiKeyHash ||
+      status ||
+      provider ||
+      searchQuery ||
+      hasStructuredScopeFilter
         ? 'realtime'
         : state.activeDataTab,
   };
@@ -784,38 +807,31 @@ const buildClaudeAccountQuotaWindows = (
 const buildAntigravityAccountQuotaWindows = (
   groups: AntigravityQuotaGroup[]
 ): AccountQuotaWindow[] =>
-  groups.map((group) => ({
-    id: group.id,
-    label: group.label,
-    remainingPercent: clampRemainingPercent(group.remainingFraction * 100),
-    resetLabel: formatQuotaResetTime(group.resetTime),
-    usageLabel: null,
-  }));
+  groups
+    .map((group): AccountQuotaWindow | null => {
+      if (group.buckets.length === 0) return null;
+      const remainingFraction = Math.min(
+        ...group.buckets.map((bucket) => bucket.remainingFraction)
+      );
+      const resetTime = group.buckets.reduce<string | undefined>((current, bucket) => {
+        if (!current) return bucket.resetTime;
+        if (!bucket.resetTime) return current;
+        const currentTime = new Date(current).getTime();
+        const nextTime = new Date(bucket.resetTime).getTime();
+        if (Number.isNaN(currentTime)) return bucket.resetTime;
+        if (Number.isNaN(nextTime)) return current;
+        return currentTime <= nextTime ? current : bucket.resetTime;
+      }, undefined);
 
-const buildGeminiCliAccountQuotaWindows = (
-  buckets: GeminiCliQuotaBucketState[],
-  t: TFunction
-): AccountQuotaWindow[] =>
-  buckets.map((bucket) => {
-    const remainingPercent =
-      bucket.remainingFraction === null
-        ? null
-        : clampRemainingPercent(bucket.remainingFraction * 100);
-    const usageLabelParts = [
-      bucket.remainingAmount === null || bucket.remainingAmount === undefined
-        ? ''
-        : t('gemini_cli_quota.remaining_amount', { count: bucket.remainingAmount }),
-      bucket.tokenType ?? '',
-    ].filter(Boolean);
-
-    return {
-      id: bucket.id,
-      label: bucket.label,
-      remainingPercent,
-      resetLabel: formatQuotaResetTime(bucket.resetTime),
-      usageLabel: usageLabelParts.length > 0 ? usageLabelParts.join(' · ') : null,
-    };
-  });
+      return {
+        id: group.id,
+        label: group.label,
+        remainingPercent: clampRemainingPercent(remainingFraction * 100),
+        resetLabel: formatQuotaResetTime(resetTime),
+        usageLabel: null,
+      };
+    })
+    .filter((window): window is AccountQuotaWindow => window !== null);
 
 const buildKimiAccountQuotaWindows = (rows: KimiQuotaRow[], t: TFunction): AccountQuotaWindow[] =>
   rows.map((row) => {
@@ -849,18 +865,25 @@ const formatXaiCurrency = (value: number | null): string => {
 const buildXaiAccountQuotaWindows = (
   billing: XaiBillingSummary,
   t: TFunction
-): AccountQuotaWindow[] => [
-  {
-    id: 'monthly-limit',
-    label: t('xai_quota.monthly_limit'),
-    remainingPercent: buildRemainingFromUsedPercent(billing.usedPercent),
-    resetLabel: billing.billingPeriodEnd ? formatQuotaResetTime(billing.billingPeriodEnd) : '-',
-    usageLabel: t('xai_quota.usage_amount', {
-      used: formatXaiCurrency(billing.usedCents),
-      limit: formatXaiCurrency(billing.monthlyLimitCents),
-    }),
-  },
-];
+): AccountQuotaWindow[] => {
+  const remainingCents =
+    billing.monthlyLimitCents !== null && billing.usedCents !== null
+      ? Math.max(0, billing.monthlyLimitCents - billing.usedCents)
+      : null;
+
+  return [
+    {
+      id: 'monthly-limit',
+      label: t('xai_quota.monthly_limit'),
+      remainingPercent: buildRemainingFromUsedPercent(billing.usedPercent),
+      resetLabel: billing.billingPeriodEnd ? formatQuotaResetTime(billing.billingPeriodEnd) : '-',
+      usageLabel: t('xai_quota.usage_amount', {
+        remaining: formatXaiCurrency(remainingCents),
+        limit: formatXaiCurrency(billing.monthlyLimitCents),
+      }),
+    },
+  ];
+};
 
 export const getAccountQuotaProviderLabel = (
   provider: MonitoringAccountQuotaProvider,
@@ -871,8 +894,6 @@ export const getAccountQuotaProviderLabel = (
       return t('antigravity_quota.title');
     case 'claude':
       return t('claude_quota.title');
-    case 'gemini-cli':
-      return t('gemini_cli_quota.title');
     case 'kimi':
       return t('kimi_quota.title');
     case 'xai':
@@ -889,8 +910,6 @@ const getAccountQuotaEmptyMessage = (provider: MonitoringAccountQuotaProvider, t
       return t('antigravity_quota.empty_models');
     case 'claude':
       return t('claude_quota.empty_windows');
-    case 'gemini-cli':
-      return t('gemini_cli_quota.empty_buckets');
     case 'kimi':
       return t('kimi_quota.empty_data');
     case 'xai':
@@ -929,13 +948,84 @@ export const buildAccountQuotaErrorEntry = (
   error,
 });
 
+export const buildObservedCodexAccountQuotaEntry = (
+  target: MonitoringAccountQuotaTarget,
+  snapshot: UsageHeaderSnapshot | undefined,
+  t: TFunction
+): AccountQuotaEntry | null => {
+  if (target.provider !== 'codex' || !hasUsageHeaderQuotaSignal(snapshot)) return null;
+  const planType = target.planType ?? getHeaderSnapshotPlanType(snapshot) ?? null;
+  const observedQuota = buildObservedCodexQuotaFromHeaderSnapshot(snapshot);
+  const planLabel = getCodexPlanLabel(planType, t);
+  const observedAt =
+    snapshot?.timestamp_ms && Number.isFinite(snapshot.timestamp_ms)
+      ? new Date(snapshot.timestamp_ms).toLocaleString()
+      : '';
+  const usedPercent = getHeaderSnapshotUsedPercent(snapshot);
+  const recoverAtMS = getHeaderSnapshotRecoverAtMs(snapshot);
+  const errorKind = getHeaderSnapshotErrorKind(snapshot);
+  const errorCode = getHeaderSnapshotErrorCode(snapshot);
+  const traceID = getHeaderSnapshotTraceId(snapshot);
+  const metaLabels = [
+    planLabel ? `${t('codex_quota.plan_label')}: ${planLabel}` : '',
+    observedAt
+      ? t('quota_management.observed_from_usage_headers_at', {
+          time: observedAt,
+          defaultValue: `Observed from latest usage response headers · ${observedAt}`,
+        })
+      : t('quota_management.observed_from_usage_headers', {
+          defaultValue: 'Observed from latest usage response headers',
+        }),
+    [errorKind, errorCode].filter(Boolean).join(' / '),
+    traceID ? `Trace: ${traceID}` : '',
+  ].filter(Boolean);
+
+  const observedWindows: CodexQuotaWindow[] = observedQuota?.payload
+    ? buildCodexQuotaWindowInfos(observedQuota.payload, { planType }).map((window) => ({
+        id: window.id,
+        label: t(window.labelKey, window.labelParams),
+        labelKey: window.labelKey,
+        labelParams: window.labelParams,
+        usedPercent: window.usedPercent,
+        resetLabel: window.resetLabel,
+        limitWindowSeconds: window.limitWindowSeconds,
+      }))
+    : [];
+  const windows: AccountQuotaWindow[] =
+    observedWindows.length > 0
+      ? buildCodexAccountQuotaWindows(observedWindows, t)
+      : usedPercent !== null || recoverAtMS
+        ? [
+            {
+              id: 'usage-header-observed',
+              label: t('codex_quota.observed_window', { defaultValue: 'Latest request' }),
+              remainingPercent: buildRemainingFromUsedPercent(usedPercent),
+              resetLabel: recoverAtMS ? new Date(recoverAtMS).toLocaleString() : '-',
+              usageLabel:
+                usedPercent !== null
+                  ? t('monitoring.account_quota_observed_used', {
+                      percent: `${Math.round(usedPercent)}%`,
+                      defaultValue: `Observed used ${Math.round(usedPercent)}%`,
+                    })
+                  : null,
+            },
+          ]
+        : [];
+
+  return {
+    ...buildBaseAccountQuotaEntry({ ...target, planType }, t, metaLabels),
+    planType,
+    windows,
+  };
+};
+
 export const requestAccountQuota = async (
   target: MonitoringAccountQuotaTarget,
   t: TFunction
 ): Promise<AccountQuotaEntry> => {
   switch (target.provider) {
     case 'antigravity': {
-      const groups = await fetchAntigravityQuota(target.file, t);
+      const { groups } = await fetchAntigravityQuota(target.file, t);
       return {
         ...buildBaseAccountQuotaEntry(target, t),
         windows: buildAntigravityAccountQuotaWindows(groups),
@@ -956,24 +1046,6 @@ export const requestAccountQuota = async (
         ...buildBaseAccountQuotaEntry(target, t, metaLabels),
         planType: quota.planType ?? target.planType,
         windows: buildClaudeAccountQuotaWindows(quota.windows, t),
-      };
-    }
-    case 'gemini-cli': {
-      const quota = await fetchGeminiCliQuotaBuckets(target.file, t);
-      const supplementary = await fetchGeminiCliCodeAssist(quota.authIndex, quota.projectId, t);
-      const metaLabels = [
-        supplementary.tierLabel
-          ? `${t('gemini_cli_quota.tier_label')}: ${supplementary.tierLabel}`
-          : '',
-        supplementary.creditBalance !== null
-          ? `${t('gemini_cli_quota.credit_label')}: ${t('gemini_cli_quota.credit_amount', {
-              count: supplementary.creditBalance,
-            })}`
-          : '',
-      ].filter(Boolean);
-      return {
-        ...buildBaseAccountQuotaEntry(target, t, metaLabels),
-        windows: buildGeminiCliAccountQuotaWindows(quota.buckets, t),
       };
     }
     case 'kimi': {

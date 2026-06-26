@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import type {
   DataZoomComponentOption,
   GridComponentOption,
@@ -8,11 +9,7 @@ import type {
   TooltipComponentOption,
   VisualMapComponentOption,
 } from 'echarts/components';
-import type {
-  BarSeriesOption,
-  HeatmapSeriesOption,
-  LineSeriesOption,
-} from 'echarts/charts';
+import type { BarSeriesOption, HeatmapSeriesOption, LineSeriesOption } from 'echarts/charts';
 import type { ComposeOption, ECElementEvent } from 'echarts/core';
 import { EChartsView } from '@/components/charts/EChartsView';
 import { Button } from '@/components/ui/Button';
@@ -51,6 +48,7 @@ import {
   hasUsageData,
   maskApiKeyHash,
   parseDateTimeLocalValue,
+  resolveUsageApiKeyLabel,
   USAGE_ANALYTICS_TABS,
   USAGE_HEATMAP_METRICS,
   USAGE_HEATMAP_SCALE_MODES,
@@ -150,8 +148,7 @@ type HeatmapChartOption = ComposeOption<
   GridComponentOption | HeatmapSeriesOption | TooltipComponentOption | VisualMapComponentOption
 >;
 
-type CostShareRankStyle = CSSProperties &
-  Record<'--rank-color' | '--rank-share', string | number>;
+type CostShareRankStyle = CSSProperties & Record<'--rank-color' | '--rank-share', string | number>;
 
 const usageChartAxisKeys = {
   requests: 0,
@@ -299,6 +296,33 @@ const compactNumber = (value: number) => {
 const formatPercent = (value: number) =>
   `${(Number.isFinite(value) ? value * 100 : 0).toFixed(2)}%`;
 
+const formatDrilldownDiagnostics = (row: UsageDrilldownEvent, locale: string, t: TFunction) => {
+  const parts: string[] = [];
+  if (row.headerErrorCode || row.headerErrorKind) {
+    parts.push(
+      `${t('monitoring.header_error')}: ${[row.headerErrorKind, row.headerErrorCode]
+        .filter(Boolean)
+        .join(' / ')}`
+    );
+  }
+  if (row.headerTraceId) {
+    parts.push(`${t('monitoring.header_trace')}: ${row.headerTraceId}`);
+  }
+  const quotaParts = [
+    row.headerQuotaPlanType,
+    typeof row.headerQuotaUsedPercent === 'number'
+      ? formatPercent(row.headerQuotaUsedPercent / 100)
+      : '',
+    row.headerQuotaRecoverAtMs
+      ? `${t('monitoring.header_recover_at')} ${formatLocalDateTime(row.headerQuotaRecoverAtMs, locale)}`
+      : '',
+  ].filter(Boolean);
+  if (quotaParts.length > 0) {
+    parts.push(`${t('monitoring.header_quota')}: ${quotaParts.join(' · ')}`);
+  }
+  return parts.join('\n');
+};
+
 const formatDelta = (value: number) => {
   const sign = value > 0 ? '+' : '';
   return `${sign}${(value * 100).toFixed(1)}%`;
@@ -435,6 +459,17 @@ const stableOptionCachesEqual = (left: StableUsageOptionCache, right: StableUsag
   left.authFiles.join('\n') === right.authFiles.join('\n') &&
   left.apiKeys.map((option) => `${option.value}:${option.label}`).join('\n') ===
     right.apiKeys.map((option) => `${option.value}:${option.label}`).join('\n');
+
+const getApiKeyRowDisplayLabel = (row: Pick<UsageRankRow, 'apiKeyHash' | 'id' | 'label'>) => {
+  const hash = row.apiKeyHash || row.id || '';
+  const label = row.label?.trim();
+  return label && label.toLowerCase() !== hash.toLowerCase() ? label : maskApiKeyHash(hash);
+};
+
+const getApiKeyContributorDisplayLabel = (row: UsageHeatmapContributor) => {
+  const label = row.label?.trim();
+  return label && label.toLowerCase() !== row.key.toLowerCase() ? label : maskApiKeyHash(row.key);
+};
 
 const metricValue = (point: UsageTimelinePoint, key: UsageMetricKey) => point[key];
 
@@ -1360,7 +1395,8 @@ function HeatmapContributorGroup({
         <span className={styles.shortcutEmpty}>{emptyLabel}</span>
       ) : (
         rows.map((row) => {
-          const label = kind === 'apiKey' ? maskApiKeyHash(row.key) : row.label || row.key;
+          const label =
+            kind === 'apiKey' ? getApiKeyContributorDisplayLabel(row) : row.label || row.key;
           return (
             <div key={`${kind}-${row.key}`} className={styles.heatmapContributorRow}>
               <div className={styles.heatmapContributorMain}>
@@ -2048,9 +2084,7 @@ function KeyAnomalyTable({
           ) : (
             rows.slice(0, 8).map((row) => (
               <tr key={row.id}>
-                <td>
-                  {type === 'credential' ? row.label : maskApiKeyHash(row.row.apiKeyHash || row.id)}
-                </td>
+                <td>{type === 'credential' ? row.label : getApiKeyRowDisplayLabel(row.row)}</td>
                 <td>{t(row.reasonKey)}</td>
                 <td>
                   <span className={`${styles.severityBadge} ${styles[`severity${row.severity}`]}`}>
@@ -2274,7 +2308,10 @@ function UsageAnalyticsPageInner() {
     const apiKeys = mergeSelectOptions([
       ...(usage.filterOptions?.api_key_stats ?? []).map((row) => {
         const hash = row.api_key_hash || row.id;
-        return { value: hash, label: maskApiKeyHash(hash) };
+        return {
+          value: hash,
+          label: resolveUsageApiKeyLabel(hash, usage.apiKeyDisplayMap),
+        };
       }),
       ...usage.apiKeyRows.map((row) => {
         const hash = row.apiKeyHash || row.id;
@@ -2300,6 +2337,7 @@ function UsageAnalyticsPageInner() {
       apiKeys,
     };
   }, [
+    usage.apiKeyDisplayMap,
     usage.apiKeyRows,
     usage.credentialRows,
     usage.filterOptions?.api_key_stats,
@@ -2384,13 +2422,18 @@ function UsageAnalyticsPageInner() {
           usage.filters.apiKeyHash !== 'all'
             ? {
                 value: usage.filters.apiKeyHash,
-                label: maskApiKeyHash(usage.filters.apiKeyHash),
+                label: resolveUsageApiKeyLabel(usage.filters.apiKeyHash, usage.apiKeyDisplayMap),
               }
             : null,
         ].filter((option): option is SelectOption => Boolean(option?.value))
       ),
     ],
-    [allApiKeyOptionLabel, displayOptionCache.apiKeys, usage.filters.apiKeyHash]
+    [
+      allApiKeyOptionLabel,
+      displayOptionCache.apiKeys,
+      usage.apiKeyDisplayMap,
+      usage.filters.apiKeyHash,
+    ]
   );
   const providerOptions = useMemo<SelectOption[]>(
     () =>
@@ -3249,9 +3292,7 @@ function UsageAnalyticsPageInner() {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() =>
-                      navigate(buildCredentialMonitoringUrl(usage.selectedCredential))
-                    }
+                    onClick={() => navigate(buildCredentialMonitoringUrl(usage.selectedCredential))}
                   >
                     <IconExternalLink size={14} />
                     {t('usage_analytics.view_request_details')}
@@ -3523,6 +3564,7 @@ function DrilldownPreviewPanel({ rows, locale }: { rows: UsageDrilldownEvent[]; 
                 <th>{t('usage_analytics.metric_total_tokens')}</th>
                 <th>{t('usage_analytics.metric_average_latency')}</th>
                 <th>{t('usage_analytics.filter_status')}</th>
+                <th>{t('usage_analytics.col_diagnostics')}</th>
               </tr>
             </thead>
             <tbody>
@@ -3531,7 +3573,7 @@ function DrilldownPreviewPanel({ rows, locale }: { rows: UsageDrilldownEvent[]; 
                   <td>{formatLocalDateTime(row.timestampMs, locale)}</td>
                   <td className={styles.monoCell}>{row.requestId || row.eventHash.slice(0, 10)}</td>
                   <td>{row.model}</td>
-                  <td>{maskApiKeyHash(row.apiKeyHash)}</td>
+                  <td>{row.apiKeyLabel || maskApiKeyHash(row.apiKeyHash)}</td>
                   <td>{compactNumber(row.totalTokens)}</td>
                   <td>{formatUsageDurationMs(row.latencyMs)}</td>
                   <td>
@@ -3540,6 +3582,9 @@ function DrilldownPreviewPanel({ rows, locale }: { rows: UsageDrilldownEvent[]; 
                         ? t('usage_analytics.status_failed')
                         : t('usage_analytics.status_success')}
                     </span>
+                  </td>
+                  <td className={styles.monoCell}>
+                    {formatDrilldownDiagnostics(row, locale, t) || '-'}
                   </td>
                 </tr>
               ))}
@@ -3618,7 +3663,7 @@ function RankTable({
                     ) : (
                       <IconModelCluster size={16} />
                     )}
-                    {type === 'apiKey' ? maskApiKeyHash(row.apiKeyHash) : row.label}
+                    {type === 'apiKey' ? getApiKeyRowDisplayLabel(row) : row.label}
                     {type === 'apiKey' ? <IconCopy size={13} /> : null}
                   </span>
                 </td>
