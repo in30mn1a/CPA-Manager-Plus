@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -47,12 +48,27 @@ const runPowerShell = (args, options = {}) =>
     ...options,
   });
 
-const runPowerShellControl = (env, args, options = {}) =>
-  execFileSync(windowsPowerShell(), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', windowsControlScript, ...args], {
-    env,
-    encoding: 'utf8',
-    ...options,
-  });
+const runPowerShellControl = (env, args, options = {}) => {
+  try {
+    return execFileSync(windowsPowerShell(), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', windowsControlScript, ...args], {
+      env,
+      encoding: 'utf8',
+      ...options,
+    });
+  } catch (error) {
+    throw new Error(
+      [
+        `PowerShell control script failed: ${args.join(' ')}`,
+        `status: ${error.status ?? 'unknown'}`,
+        error.stdout ? `stdout:\n${error.stdout}` : '',
+        error.stderr ? `stderr:\n${error.stderr}` : '',
+        error.message,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+    );
+  }
+};
 
 const spawnPowerShellControl = (env, args) => {
   const result = spawnSync(
@@ -60,10 +76,21 @@ const spawnPowerShellControl = (env, args) => {
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', windowsControlScript, ...args],
     {
       env,
-      stdio: 'ignore',
+      encoding: 'utf8',
     },
   );
-  expect(result.status).toBe(0);
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        `PowerShell control script exited with status ${result.status}`,
+        result.error ? `error: ${result.error.message}` : '',
+        result.stdout ? `stdout:\n${result.stdout}` : '',
+        result.stderr ? `stderr:\n${result.stderr}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+    );
+  }
 };
 
 afterEach(() => {
@@ -214,6 +241,80 @@ describe('native control scripts', () => {
     }
   });
 
+  it('rejects unsafe Unix custom runtime parents and symlinked runtime files', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const sleepBinary = findExecutable(['/bin/sleep', '/usr/bin/sleep']);
+    if (!sleepBinary) {
+      return;
+    }
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-native-unsafe-'));
+    tempDirs.push(tempDir);
+
+    const unsafeDir = path.join(tempDir, 'unsafe-logs');
+    mkdirSync(unsafeDir, { recursive: true });
+    chmodSync(unsafeDir, 0o777);
+
+    const unsafeParentResult = spawnSync('bash', [unixControlScript, 'start', '30'], {
+      env: {
+        ...process.env,
+        CPA_MANAGER_PLUS_BIN: sleepBinary,
+        CPA_MANAGER_PLUS_RUN_DIR: path.join(tempDir, 'run'),
+        CPA_MANAGER_PLUS_LOG_FILE: path.join(unsafeDir, 'manager.log'),
+      },
+      encoding: 'utf8',
+    });
+
+    expect(unsafeParentResult.status).not.toBe(0);
+    expect(unsafeParentResult.stderr).toContain('unsafe runtime directory');
+
+    const logTarget = path.join(tempDir, 'target.log');
+    const symlinkedLog = path.join(tempDir, 'symlink.log');
+    writeFileSync(logTarget, '');
+    symlinkSync(logTarget, symlinkedLog);
+
+    const symlinkResult = spawnSync('bash', [unixControlScript, 'start', '30'], {
+      env: {
+        ...process.env,
+        CPA_MANAGER_PLUS_BIN: sleepBinary,
+        CPA_MANAGER_PLUS_RUN_DIR: path.join(tempDir, 'run-2'),
+        CPA_MANAGER_PLUS_LOG_FILE: symlinkedLog,
+      },
+      encoding: 'utf8',
+    });
+
+    expect(symlinkResult.status).not.toBe(0);
+    expect(symlinkResult.stderr).toContain('symlinked runtime file');
+  });
+
+  it('rejects invalid Unix log line counts', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-native-logs-'));
+    tempDirs.push(tempDir);
+
+    const logFile = path.join(tempDir, 'manager.log');
+    writeFileSync(logFile, 'line\n');
+
+    for (const invalidLineCount of ['0', '-1', 'abc']) {
+      const result = spawnSync('bash', [unixControlScript, 'logs', invalidLineCount], {
+        env: {
+          ...process.env,
+          CPA_MANAGER_PLUS_LOG_FILE: logFile,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('Invalid log line count');
+    }
+  });
+
   it('refuses to stop a running process from an unverifiable legacy Unix PID file', () => {
     if (process.platform === 'win32') {
       return;
@@ -287,26 +388,19 @@ describe('native control scripts', () => {
     const pidFile = path.join(tempDir, 'custom-run', 'nested', 'manager.pid');
     const logFile = path.join(tempDir, 'custom-logs', 'nested', 'manager.log');
     const errLogFile = path.join(tempDir, 'custom-logs', 'nested', 'manager.err.log');
-    const childScript = path.join(tempDir, 'child.ps1');
-    writeFileSync(childScript, 'Start-Sleep -Seconds 30\r\n');
+    const childScript = path.join(tempDir, 'child.js');
+    writeFileSync(childScript, 'setTimeout(() => {}, 30000);\r\n');
 
     const env = {
       ...process.env,
-      CPA_MANAGER_PLUS_BIN: windowsPowerShell(),
+      CPA_MANAGER_PLUS_BIN: process.execPath,
       CPA_MANAGER_PLUS_PID_FILE: pidFile,
       CPA_MANAGER_PLUS_LOG_FILE: logFile,
       CPA_MANAGER_PLUS_ERR_LOG_FILE: errLogFile,
     };
 
     try {
-      spawnPowerShellControl(env, [
-        'start',
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        childScript,
-      ]);
+      spawnPowerShellControl(env, ['start', childScript]);
 
       expect(existsSync(pidFile)).toBe(true);
       expect(existsSync(logFile)).toBe(true);
@@ -328,6 +422,16 @@ describe('native control scripts', () => {
       ]);
 
       expect(runPowerShellControl(env, ['logs', '20'])).toBeDefined();
+      const invalidLogsResult = spawnSync(
+        windowsPowerShell(),
+        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', windowsControlScript, 'logs', '0'],
+        {
+          env,
+          encoding: 'utf8',
+        },
+      );
+      expect(invalidLogsResult.status).not.toBe(0);
+      expect(invalidLogsResult.stderr).toContain('Invalid log line count');
       expect(runPowerShellControl(env, ['stop'])).toContain('stopped');
       expect(existsSync(pidFile)).toBe(false);
     } finally {
@@ -337,4 +441,56 @@ describe('native control scripts', () => {
       });
     }
   }, 30000);
+
+  it('rejects unsafe Windows custom runtime parents', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-native-win-unsafe-'));
+    tempDirs.push(tempDir);
+
+    const unsafeDir = path.join(tempDir, 'unsafe-run');
+    mkdirSync(unsafeDir, { recursive: true });
+    const childScript = path.join(tempDir, 'child.js');
+    writeFileSync(childScript, 'setTimeout(() => {}, 30000);\r\n');
+
+    runPowerShell([
+      '-Command',
+      [
+        `$path = ${psQuote(unsafeDir)}`,
+        '$acl = Get-Acl -LiteralPath $path',
+        '$users = New-Object System.Security.Principal.SecurityIdentifier "S-1-5-32-545"',
+        '$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($users, "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")',
+        '$acl.AddAccessRule($rule)',
+        'Set-Acl -LiteralPath $path -AclObject $acl',
+      ].join('; '),
+    ]);
+
+    const result = spawnSync(
+      windowsPowerShell(),
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        windowsControlScript,
+        'start',
+        childScript,
+      ],
+      {
+        env: {
+          ...process.env,
+          CPA_MANAGER_PLUS_BIN: process.execPath,
+          CPA_MANAGER_PLUS_RUN_DIR: path.join(tempDir, 'safe-run'),
+          CPA_MANAGER_PLUS_LOG_DIR: path.join(tempDir, 'safe-logs'),
+          CPA_MANAGER_PLUS_PID_FILE: path.join(unsafeDir, 'manager.pid'),
+        },
+        encoding: 'utf8',
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('unsafe runtime directory');
+  });
 });

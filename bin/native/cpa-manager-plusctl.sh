@@ -37,7 +37,8 @@ Commands:
   stop             Stop the background process
   restart          Restart the background process
   status           Show process status
-  logs [lines|-f]  Print recent logs, or follow with -f
+  logs [lines|-f|--follow]
+                   Print recent logs, or follow with -f/--follow
 
 Environment overrides:
   CPA_MANAGER_PLUS_BIN       Binary path
@@ -246,13 +247,24 @@ ensure_private_dir() {
   local dir="$1"
   local manage_existing="${2:-false}"
 
-  if [ -z "${dir}" ] || [ "${dir}" = "." ]; then
+  if [ -z "${dir}" ]; then
     return 0
   fi
 
+  if [ "${dir}" = "." ]; then
+    dir="$(pwd -P)"
+  fi
+
   if [ -d "${dir}" ]; then
+    if [ -L "${dir}" ]; then
+      echo "Refusing to use symlinked runtime directory: ${dir}" >&2
+      exit 1
+    fi
+
     if [ "${manage_existing}" = "true" ]; then
       chmod 700 "${dir}"
+    else
+      reject_unsafe_custom_dir "${dir}"
     fi
     return 0
   fi
@@ -261,10 +273,62 @@ ensure_private_dir() {
   chmod 700 "${dir}"
 }
 
+path_mode() {
+  local path="$1"
+
+  if stat -c '%a' "${path}" >/dev/null 2>&1; then
+    stat -c '%a' "${path}"
+    return
+  fi
+
+  stat -f '%Lp' "${path}"
+}
+
+is_group_or_world_writable_mode() {
+  local mode="$1"
+  local perms group other
+
+  perms="${mode}"
+  while [ "${#perms}" -lt 3 ]; do
+    perms="0${perms}"
+  done
+  perms="${perms: -3}"
+  group="${perms:1:1}"
+  other="${perms:2:1}"
+
+  [ $((10#${group} & 2)) -ne 0 ] || [ $((10#${other} & 2)) -ne 0 ]
+}
+
+reject_unsafe_custom_dir() {
+  local dir="$1"
+  local mode
+
+  mode="$(path_mode "${dir}")"
+  if is_group_or_world_writable_mode "${mode}"; then
+    echo "Refusing to use unsafe runtime directory: ${dir} must not be group- or world-writable." >&2
+    exit 1
+  fi
+}
+
+reject_unsafe_runtime_file() {
+  local file="$1"
+
+  if [ -L "${file}" ]; then
+    echo "Refusing to use symlinked runtime file: ${file}" >&2
+    exit 1
+  fi
+
+  if [ -e "${file}" ] && [ ! -f "${file}" ]; then
+    echo "Refusing to use non-regular runtime file: ${file}" >&2
+    exit 1
+  fi
+}
+
 prepare_private_file() {
   local file="$1"
   local parent_dir
 
+  reject_unsafe_runtime_file "${file}"
   parent_dir="$(dirname "${file}")"
   if [ "${parent_dir}" = "${run_dir}" ]; then
     ensure_private_dir "${parent_dir}" "${manage_run_dir}"
@@ -425,12 +489,22 @@ status_app() {
 }
 
 show_logs() {
+  if [ "$#" -gt 1 ]; then
+    echo "Usage: $(basename "$0") logs [lines|-f|--follow]" >&2
+    exit 1
+  fi
+
+  local option="${1:-80}"
+  if [ "${option}" != "-f" ] && [ "${option}" != "--follow" ] && ! [[ "${option}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid log line count: ${option}" >&2
+    exit 1
+  fi
+
   if [ ! -f "${log_file}" ]; then
     echo "Log file does not exist yet: ${log_file}" >&2
     exit 1
   fi
 
-  local option="${1:-80}"
   if [ "${option}" = "-f" ] || [ "${option}" = "--follow" ]; then
     tail -n 80 -f "${log_file}"
     return 0
