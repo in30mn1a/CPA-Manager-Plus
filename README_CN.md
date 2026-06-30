@@ -1,16 +1,28 @@
+<div align="center">
+
 # CPA Manager Plus
 
 [English](README.md)
 
-CPA Manager Plus 是面向 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的单文件管理面板，并提供 Manager Server 用于持久化请求监控。README 只作为项目入口；部署、运维和排障细节请看 [Wiki](https://github.com/seakee/CPA-Manager-Plus/wiki)。
+[![Release](https://img.shields.io/github/v/release/seakee/CPA-Manager-Plus?style=flat-square)](https://github.com/seakee/CPA-Manager-Plus/releases/latest)
+[![License](https://img.shields.io/github/license/seakee/CPA-Manager-Plus?style=flat-square&color=blue)](https://github.com/seakee/CPA-Manager-Plus/blob/main/LICENSE)
+[![Docker Pulls](https://img.shields.io/docker/pulls/seakee/cpa-manager-plus?style=flat-square)](https://hub.docker.com/r/seakee/cpa-manager-plus)
+[![Stars](https://img.shields.io/github/stars/seakee/CPA-Manager-Plus?style=flat-square&label=stars)](https://github.com/seakee/CPA-Manager-Plus/stargazers)
 
-- 推荐 CPA 版本：`v7.1.39+`
-- HTTP 用量队列最低 CPA 版本：`v6.10.8+`
-- 前端：React 19、Vite、单文件 `management.html`
-- 后端：Go 1.24 Manager Server，使用 `modernc.org/sqlite`，无需 CGO
-- 镜像：`seakee/cpa-manager-plus` 和 `ghcr.io/seakee/cpa-manager-plus`
+自托管的 AI Gateway 监控面板，追踪请求、成本、失败、额度和账号健康状态。
 
-## 面板预览
+配合 [CPA / CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 及 OpenAI-compatible 网关使用，支持 Codex、Claude Code 等工具的流量观测。
+
+</div>
+
+## 亮点
+
+- 实时仪表盘展示今日请求量、成功率、平均延迟和预估成本，支持按模型、账号、项目和时间范围筛选。
+- 按模型的成本排行和按账号的费用拆解，Token 粒度细分到输入、输出、推理和缓存。
+- Codex 账号定时巡检，检查 quota 剩余、凭证有效性和工作区状态。触达限额的账号自动暂停，到 reset 时间后恢复。
+- 一个 Docker 容器搞定，数据全在本地，除了你的 Gateway 不产生任何对外请求。
+
+## 截图
 
 <table>
   <tr>
@@ -35,30 +47,81 @@ CPA Manager Plus 是面向 [CLIProxyAPI](https://github.com/router-for-me/CLIPro
   </tr>
 </table>
 
-## 核心能力
+## 什么时候需要它
 
-- 将 CPA 用量队列沉淀为 SQLite 请求台账，支持实时监控、历史查询、导入导出和长期分析。
-- 按模型、提供商、账号/认证文件、API Key 别名、项目、渠道和时间窗口拆解费用、Token、缓存、延迟、失败率与吞吐。
-- Codex 账号运营：浏览器本地巡检和 Manager Server 定时巡检，识别 quota window、401 重登、停用工作区、失效账号，并给出启用、禁用、删除或重登建议。
-- 账号池保护：遇到 Codex `usage_limit_reached` 时，可临时禁用认证文件并按 reset 时间恢复；只恢复由 CPAMP 临时禁用的账号，不会误启用手动禁用项。revoked/invalid OAuth token 等认证异常会进入候选队列，可人工处理或经身份校验后自动禁用。
-- 模型价格从 LiteLLM 和 OpenRouter 同步，支持改名/带提供商前缀模型的候选匹配，费用估算会回流到首页、监控和用量分析。
-- CPA 日常运维覆盖提供商、认证文件、OAuth、额度、API Key、日志、插件管理/商店和系统信息，支持 JSON 粘贴导入与批量认证文件操作。
-- Manager Server 模式提供管理员密钥登录、CPA Management Key 加密存储、请求监控和服务端自动化；CPA 面板模式保留轻量入口，适合继续由 CPA 托管面板。
-- 提供 Docker 镜像、Linux/macOS/Windows 的 `amd64`/`arm64` 原生包，以及可独立使用的单文件 `management.html`。
+**"为什么我的 Codex 请求全部失败了？"** — 打开监控页面，可以看到失败率、状态码和受影响的账号或模型。失败原因以脱敏摘要呈现，原始错误体不会离开本机。
 
-## 选择模式
+**"这周的 AI 流量花了多少钱？"** — 用量分析页面按模型、提供商、账号、项目拆解费用。可以看到哪个模型最贵，Token 在输入、输出、推理和缓存之间怎么分布。
 
-| 模式 | 入口地址 | 登录凭证 | 适用场景 |
-|---|---|---|---|
-| Manager Server 模式 | `http://<host>:18317/management.html` | Manager Server 管理员密钥 | 新部署、请求监控、历史统计 |
-| CPA 面板模式 | `http://<cpa-host>:8317/management.html` | CPA Management Key | 继续使用 CPA 托管面板，不需要 Manager Server 统计 |
-| 前端开发模式 | Vite dev server 或 `apps/web/dist/index.html` | CPA 地址和密钥 | 本地 UI 开发 |
+**"我的 Codex 账号还能用吗？"** — 巡检页面列出每个账号的 quota 剩余、计划等级、reset 时间和凭证状态。如果账号被停用或撞了限额，CPAMP 会告诉你发生了什么、下一步怎么做。
 
-Manager Server 模式是完整 CPA Manager Plus 体验。CPA 面板模式保持为纯 CPA 面板：不配置 Manager Server，也不读取 Manager Server SQLite 数据。
+## 产品能力
+
+### 请求监控
+
+经过 Gateway 的每条请求都会被记录并可搜索。监控页面提供三个视图：账号概览、调用方 API Key 汇总、以及展示单条请求的模型/状态/延迟/Token 用量的实时流。支持将请求历史导出为 JSONL，也可以从备份导入历史数据。
+
+### 成本与用量分析
+
+独立的分析页面按模型排列成本、展示 Token 构成、按账号拆解费用。筛选维度覆盖提供商、项目、渠道和任意日期范围。模型价格从 LiteLLM 和 OpenRouter 同步，提供商调价后成本估算会跟着更新。
+
+### 账号健康与 Quota
+
+CPAMP 对 Codex 账号做定时巡检：检查 quota window、reset credit 及其到期时间、凭证有效性（OAuth token、工作区状态），并判断账号应该暂停还是恢复。当账号触达 `usage_limit_reached` 时，对应认证文件会被临时禁用，到 reset 时间后自动恢复。手动禁用的账号不会被自动覆盖。
+
+### Gateway 日常运维
+
+面板同时覆盖 CPA 日常操作：管理提供商、认证文件、OAuth 登录、API Key、额度、日志、插件和系统配置。认证文件支持 JSON 粘贴或批量导入。
+
+### 自托管与隐私
+
+CPAMP 除了你配置的 CPA Gateway 之外不会发起任何对外连接。没有分析 SDK、没有云依赖、不需要注册账号。支持 Docker 容器或原生二进制（Linux、macOS、Windows，amd64/arm64），数据全部存储在本地文件中。
 
 ## 快速开始
 
-运行 Manager Server：
+CPA Manager Plus 配合 [CPA / CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 使用，CPA 是一个把请求路由到 OpenAI-compatible 提供商的 AI Gateway。
+
+### CPA + CPAMP 一起部署
+
+如果还没有在运行 CPA，用这个 Compose 文件同时启动两个服务：
+
+```yaml
+services:
+  cli-proxy-api:
+    image: eceasy/cli-proxy-api:latest
+    restart: unless-stopped
+    ports:
+      - "8317:8317"
+    volumes:
+      - cpa-data:/app/data
+
+  cpa-manager-plus:
+    image: seakee/cpa-manager-plus:latest
+    restart: unless-stopped
+    ports:
+      - "18317:18317"
+    volumes:
+      - cpa-manager-plus-data:/data
+
+volumes:
+  cpa-data:
+  cpa-manager-plus-data:
+```
+
+```bash
+docker compose up -d
+```
+
+打开 `http://<host>:18317/management.html`，通过 `docker logs cpa-manager-plus` 拿到管理员密钥，然后填写：
+
+1. 管理员密钥。
+2. CPA 地址：`http://cli-proxy-api:8317`。
+3. CPA Management Key。
+4. 请求监控偏好设置。
+
+### 仅部署 CPAMP
+
+如果 CPA 已经在运行，单独启动 CPAMP：
 
 ```bash
 docker run -d \
@@ -69,20 +132,9 @@ docker run -d \
   seakee/cpa-manager-plus:latest
 ```
 
-打开：
+推荐 CPA 版本：`v7.1.39+`，HTTP 用量队列需要 `v6.10.8+`。
 
-```text
-http://<host>:18317/management.html
-```
-
-首次启动时，通过 `docker logs cpa-manager-plus` 获取生成的管理员密钥，然后在 setup 中填写：
-
-- Manager Server 管理员密钥
-- CPA 地址
-- CPA Management Key
-- 请求监控设置
-
-完整 setup、Compose、Linux 宿主机网络、升级、备份和原生包部署请看 Wiki。
+CPAMP 也支持作为 CPA 托管面板（`:8317`）或独立前端开发使用。Compose 变体、宿主机网络、升级和备份等部署细节请看 [Wiki](https://github.com/seakee/CPA-Manager-Plus/wiki)。
 
 ## 文档
 
@@ -98,6 +150,13 @@ http://<host>:18317/management.html
 | 常见问题 | [CPA Manager Plus 常见问题与解决方案](https://github.com/seakee/CPA-Manager-Plus/wiki/CPA-Manager-Plus-常见问题与解决方案) |
 | 发布流程 | [docs/release.md](docs/release.md) |
 | 版本说明 | [docs/release-notes](docs/release-notes) |
+
+## 数据与隐私
+
+- CPAMP 不会主动联网，唯一的外部连接是你配置的 CPA Gateway。没有分析 SDK，不需要注册账号。
+- 所有数据（请求历史、凭证、配置）都存储在本机的本地文件中。
+- Gateway 密钥在入库前加密，导出数据不包含原始错误体。
+- CPAMP 用于监控你有权管理的流量：成本追踪、故障诊断和运维健康检查。
 
 ## 开发
 
@@ -138,6 +197,16 @@ docker compose -f docker-compose.manager.yml up --build
 - 感谢上游项目 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center) 提供基础与参考。
 - 感谢 [Linux.do](https://linux.do/) 社区对项目推广与反馈的支持。
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=seakee%2FCPA-Manager-Plus&type=date&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=seakee/CPA-Manager-Plus&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=seakee/CPA-Manager-Plus&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=seakee/CPA-Manager-Plus&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## 许可证
 
-MIT
+[MIT](https://github.com/seakee/CPA-Manager-Plus/blob/main/LICENSE) — Copyright 2026 Seakee。
