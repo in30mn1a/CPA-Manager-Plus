@@ -147,6 +147,7 @@
   "header": {
     "check_connection": "Check Connection",
     "refresh_all": "Refresh All",
+    "open_github": "Open GitHub repository",
     "logout": "Logout"
   },
   "connection": {

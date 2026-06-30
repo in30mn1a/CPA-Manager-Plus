@@ -146,6 +146,7 @@
   "header": {
     "check_connection": "Проверить подключение",
     "refresh_all": "Обновить всё",
+    "open_github": "Открыть репозиторий GitHub",
     "logout": "Выйти"
   },
   "connection": {

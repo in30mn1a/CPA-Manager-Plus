@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { PageTransition } from '@/components/common/PageTransition';
 import { MainRoutes } from '@/router/MainRoutes';
 import {
+  IconGithub,
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
@@ -53,6 +54,7 @@ import { isSupportedLanguage } from '@/utils/language';
 import type { Theme, VisualEffectsMode } from '@/types';
 
 const SIDEBAR_ICON_SIZE = 20;
+const GITHUB_REPOSITORY_URL = 'https://github.com/seakee/CPA-Manager-Plus';
 
 const sidebarIcons: Record<string, ReactNode> = {
   dashboard: <IconSidebarDashboard size={SIDEBAR_ICON_SIZE} />,
@@ -775,6 +777,19 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
             >
               {headerIcons.refresh}
             </Button>
+
+            <a
+              className="btn btn-ghost btn-sm"
+              href={GITHUB_REPOSITORY_URL}
+              target="_blank"
+              rel="noreferrer"
+              title={t('header.open_github')}
+              aria-label={t('header.open_github')}
+            >
+              <span>
+                <IconGithub size={16} />
+              </span>
+            </a>
 
             <div
               className={`language-menu ${languageMenuOpen ? 'open' : ''}`}
