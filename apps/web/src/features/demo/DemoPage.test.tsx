@@ -181,7 +181,7 @@ describe('DemoPage', () => {
       'request-errors-2026-06-28.jsonl',
     ]);
     expect(new Date(getDemoManagerLatestRelease().published_at).getTime()).toBe(
-      new Date('2026-06-29T00:00:00+08:00').getTime()
+      new Date(2026, 5, 29).getTime()
     );
 
     vi.setSystemTime(new Date('2026-06-30T10:00:00+08:00'));
@@ -193,7 +193,7 @@ describe('DemoPage', () => {
       'request-errors-2026-06-29.jsonl',
     ]);
     expect(new Date(getDemoManagerLatestRelease().published_at).getTime()).toBe(
-      new Date('2026-06-30T00:00:00+08:00').getTime()
+      new Date(2026, 5, 30).getTime()
     );
   });
 });
