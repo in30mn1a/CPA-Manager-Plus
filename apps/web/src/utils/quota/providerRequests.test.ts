@@ -29,7 +29,12 @@ import {
   CODEX_RATE_LIMIT_RESET_CREDITS_URL,
   CODEX_USAGE_URL,
 } from './constants';
-import { fetchAntigravityQuota, fetchCodexQuota } from './providerRequests';
+import {
+  buildXaiBillingSummary,
+  fetchAntigravityQuota,
+  fetchClaudeQuota,
+  fetchCodexQuota,
+} from './providerRequests';
 
 const t = ((key: string) => key) as TFunction;
 
@@ -182,6 +187,60 @@ describe('fetchCodexQuota', () => {
     expect(result.rateLimitResetCreditsAvailableCount).toBe(1);
     expect(result.rateLimitResetCredits).toEqual([]);
     expect(result.rateLimitResetCreditsError).toBe('codex_quota.reset_credits_invalid_payload');
+  });
+});
+
+describe('fetchClaudeQuota', () => {
+  it('keeps usage quota data when profile lookup fails', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          five_hour: {
+            utilization: 12,
+            resets_at: '2026-07-01T10:00:00Z',
+          },
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.planType).toBeNull();
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]).toMatchObject({
+      id: 'five-hour',
+      usedPercent: 12,
+    });
+  });
+});
+
+describe('buildXaiBillingSummary', () => {
+  it('normalizes cents fields from mixed object and snake-case payloads', () => {
+    const summary = buildXaiBillingSummary({
+      monthly_limit: { val: '15000' },
+      used: { val: 3750 },
+      on_demand_cap: '2500',
+      billing_period_end: '2026-07-31T00:00:00Z',
+    });
+
+    expect(summary).toMatchObject({
+      monthlyLimitCents: 15000,
+      usedCents: 3750,
+      onDemandCapCents: 2500,
+      billingPeriodEnd: '2026-07-31T00:00:00Z',
+      usedPercent: 25,
+    });
   });
 });
 
