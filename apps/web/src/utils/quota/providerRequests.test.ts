@@ -145,6 +145,44 @@ describe('fetchCodexQuota', () => {
     expect(result.rateLimitResetCredits).toEqual([]);
     expect(result.rateLimitResetCreditsError).toBe('502 bad gateway');
   });
+
+  it('uses localized reset credit errors for invalid detail payloads', async () => {
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          plan_type: 'plus',
+          rate_limit_reset_credits: {
+            available_count: 1,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          unexpected: true,
+        },
+      });
+
+    const result = await fetchCodexQuota(
+      {
+        name: 'codex.json',
+        type: 'codex',
+        authIndex: 'auth-1',
+      },
+      t
+    );
+
+    expect(result.rateLimitResetCreditsAvailableCount).toBe(1);
+    expect(result.rateLimitResetCredits).toEqual([]);
+    expect(result.rateLimitResetCreditsError).toBe('codex_quota.reset_credits_invalid_payload');
+  });
 });
 
 describe('fetchAntigravityQuota', () => {

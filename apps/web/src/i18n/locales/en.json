@@ -1038,6 +1038,7 @@
     "reset_credits_unknown": "Not recorded",
     "reset_credits_earliest_expiry": "Earliest expires {{time}}",
     "reset_credits_expiry_label": "Reset credit expiry",
+    "reset_credits_invalid_payload": "Reset credits endpoint returned an invalid payload",
     "reset_credit_expiry_item": "Credit {{index}}",
     "active_limit_label": "Active limit",
     "credits_label": "Credits",

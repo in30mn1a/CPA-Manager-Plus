@@ -29,7 +29,6 @@ import {
   CLAUDE_REQUEST_HEADERS,
   CLAUDE_USAGE_URL,
   CLAUDE_USAGE_WINDOW_KEYS,
-  CODEX_REQUEST_HEADERS,
   CODEX_RATE_LIMIT_RESET_CREDITS_URL,
   CODEX_USAGE_URL,
   KIMI_REQUEST_HEADERS,
@@ -52,6 +51,10 @@ import {
 } from './parsers';
 import { resolveCodexChatgptAccountId, resolveCodexPlanType } from './resolvers';
 import { buildCodexQuotaWindowInfos } from './codexQuota';
+import {
+  buildCodexResetCreditsRequestHeaders,
+  buildCodexUsageRequestHeaders,
+} from './codexRequestHeaders';
 import { normalizeCodexResetCreditsPayload } from './resetCredits';
 
 const DEFAULT_ANTIGRAVITY_PROJECT_ID = 'bamboo-precept-lgxtn';
@@ -274,26 +277,6 @@ export const buildCodexQuotaWindows = (
     limitWindowSeconds: window.limitWindowSeconds,
   }));
 
-const buildCodexUsageRequestHeaders = (accountId?: string | null): Record<string, string> => {
-  const headers: Record<string, string> = {
-    ...CODEX_REQUEST_HEADERS,
-  };
-  const trimmedAccountId = String(accountId ?? '').trim();
-  if (trimmedAccountId) {
-    headers['Chatgpt-Account-Id'] = trimmedAccountId;
-  }
-  return headers;
-};
-
-const buildCodexResetCreditsRequestHeaders = (
-  accountId?: string | null
-): Record<string, string> => ({
-  ...buildCodexUsageRequestHeaders(accountId),
-  Accept: 'application/json',
-  'OpenAI-Beta': 'codex-1',
-  Originator: 'Codex Desktop',
-});
-
 const resolveCodexRateLimitResetCreditsAvailableCount = (
   payload: CodexUsagePayload
 ): number | null => {
@@ -321,7 +304,8 @@ const resolveCodexResetCreditsAvailableCount = (
 
 const fetchCodexResetCredits = async (
   authIndex: string,
-  accountId?: string | null
+  accountId: string | null | undefined,
+  t: TFunction
 ): Promise<CodexResetCreditsData> => {
   try {
     const result = await apiCallApi.request(
@@ -347,7 +331,7 @@ const fetchCodexResetCredits = async (
       return {
         availableCount: null,
         credits: [],
-        error: 'Invalid Codex reset credits payload',
+        error: t('codex_quota.reset_credits_invalid_payload'),
       };
     }
 
@@ -397,7 +381,7 @@ export const fetchCodexQuota = async (
   const planType = planTypeFromUsage ?? planTypeFromFile;
   const windows = buildCodexQuotaWindows(payload, t, planType);
   const usageResetCreditsAvailableCount = resolveCodexRateLimitResetCreditsAvailableCount(payload);
-  const resetCredits = await fetchCodexResetCredits(authIndex, accountId);
+  const resetCredits = await fetchCodexResetCredits(authIndex, accountId, t);
   return {
     planType,
     windows,
