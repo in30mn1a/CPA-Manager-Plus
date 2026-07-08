@@ -27,6 +27,10 @@ export type AccountQuotaEntry = {
   emptyMessage?: string;
   windows: AccountQuotaWindow[];
   error?: string;
+  failedAtMs?: number;
+  fetchedAtMs?: number;
+  observedAtMs?: number;
+  observedFromUsageHeaders?: boolean;
 };
 
 export type AccountQuotaState = {
@@ -34,6 +38,7 @@ export type AccountQuotaState = {
   targetKey: string;
   entries: AccountQuotaEntry[];
   error?: string;
+  failedAtMs?: number;
   lastRefreshedAt?: number;
 };
 

@@ -4,8 +4,11 @@ import {
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
+  fetchKimiQuota,
   fetchXaiQuota,
 } from '@/utils/quota';
+import zhCN from '@/i18n/locales/zh-CN.json';
+import zhTW from '@/i18n/locales/zh-TW.json';
 import type { MonitoringAccountQuotaTarget } from '@/features/monitoring/accountOverviewQuotaTargets';
 import type {
   MonitoringAccountRow,
@@ -15,9 +18,12 @@ import {
   buildAccountOptions,
   buildApiKeyOptionsFromRows,
   buildChannelOptionsFromValues,
+  buildAccountQuotaRefreshFailureEntry,
   buildMonitoringInitialStateFromQuery,
   buildModelOptionsFromValues,
   buildProviderOptionsFromValues,
+  mergeObservedAccountQuotaEntry,
+  mergeObservedAccountQuotaState,
   requestAccountQuota,
 } from './monitoringCenterPageModel';
 import { getDefaultMonitoringCenterUiState } from '@/features/monitoring/monitoringCenterUiState';
@@ -54,6 +60,8 @@ const t = ((key: string, options?: Record<string, unknown>) => {
     'xai_quota.title': 'xAI Quota',
     'xai_quota.empty_data': 'No xAI quota data',
     'xai_quota.monthly_limit': 'Monthly billing limit',
+    'xai_quota.monthly_credits': 'Monthly credits',
+    'xai_quota.pay_as_you_go_label': 'Pay-as-you-go',
     'xai_quota.on_demand_cap': 'On-demand cap',
     'xai_quota.usage_amount': '{{remaining}} / {{limit}} remaining',
   };
@@ -136,6 +144,36 @@ const createApiKeyRow = (apiKeyHash: string, label: string): MonitoringApiKeyRow
 });
 
 describe('monitoringCenterPageModel filter options', () => {
+  it('keeps Chinese compact all-filter labels contextual', () => {
+    const keys = [
+      'filter_all_accounts_short',
+      'filter_all_providers_short',
+      'filter_all_models_short',
+      'filter_all_channels_short',
+      'filter_all_api_keys_short',
+      'filter_all_statuses_short',
+    ] as const;
+
+    expect(keys.map((key) => zhCN.monitoring[key])).toEqual([
+      '全部账号',
+      '全部提供方',
+      '全部模型',
+      '全部渠道',
+      '全部调用方密钥',
+      '全部状态',
+    ]);
+    expect(keys.map((key) => zhTW.monitoring[key])).toEqual([
+      '全部帳號',
+      '全部提供方',
+      '全部模型',
+      '全部渠道',
+      '全部呼叫方密鑰',
+      '全部狀態',
+    ]);
+    expect(new Set(keys.map((key) => zhCN.monitoring[key])).size).toBe(keys.length);
+    expect(new Set(keys.map((key) => zhTW.monitoring[key])).size).toBe(keys.length);
+  });
+
   it('maps usage analytics drilldown query into initial realtime filters', () => {
     const initialState = {
       ...getDefaultMonitoringCenterUiState(),
@@ -290,6 +328,509 @@ describe('monitoringCenterPageModel account quota', () => {
     });
   });
 
+  it('merges observed Codex account quota without dropping existing API-only windows', () => {
+    const activeEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'free',
+      metaLabels: ['Codex Quota', 'Plan: Free'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 95,
+          resetLabel: '06/30 12:00',
+          usageLabel: '1.5d / 30d used',
+        },
+        {
+          id: 'spark-five-hour-0',
+          label: 'spark 5-hour limit',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+          usageLabel: '1.5h / 5h used',
+        },
+      ],
+    };
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaEntry(activeEntry, observedEntry);
+
+    expect(merged).toMatchObject({
+      planType: 'plus',
+      metaLabels: [
+        'Codex Quota',
+        'Plan: Plus',
+        'Observed from latest usage response headers',
+      ],
+      windows: [
+        {
+          id: 'monthly',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+        {
+          id: 'spark-five-hour-0',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+          usageLabel: '1.5h / 5h used',
+        },
+      ],
+    });
+  });
+
+  it('marks manual quota refresh failures instead of treating cached entries as success', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const activeEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'free',
+      metaLabels: ['Codex Quota', 'Plan: Free'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 95,
+          resetLabel: '06/30 12:00',
+          usageLabel: '1.5d / 30d used',
+        },
+      ],
+    };
+
+    const failedEntry = buildAccountQuotaRefreshFailureEntry(
+      target,
+      '502 bad gateway',
+      t,
+      activeEntry,
+      null
+    );
+
+    expect(failedEntry).toMatchObject({
+      key: 'codex::2::codex.json',
+      error: '502 bad gateway',
+      windows: [
+        {
+          id: 'monthly',
+          remainingPercent: 95,
+        },
+      ],
+    });
+  });
+
+  it('keeps header-updated fields on manual quota refresh failures', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const activeEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'free',
+      metaLabels: ['Codex Quota', 'Plan: Free'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 95,
+          resetLabel: '06/30 12:00',
+          usageLabel: '1.5d / 30d used',
+        },
+        {
+          id: 'spark-five-hour-0',
+          label: 'spark 5-hour limit',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+          usageLabel: '1.5h / 5h used',
+        },
+      ],
+    };
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    const failedEntry = buildAccountQuotaRefreshFailureEntry(
+      target,
+      '502 bad gateway',
+      t,
+      activeEntry,
+      observedEntry
+    );
+
+    expect(failedEntry).toMatchObject({
+      planType: 'plus',
+      error: '502 bad gateway',
+      windows: [
+        {
+          id: 'monthly',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+        },
+        {
+          id: 'spark-five-hour-0',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+        },
+      ],
+    });
+  });
+
+  it('keeps API-only windows across repeated manual quota refresh failures', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const activeEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'free',
+      metaLabels: ['Codex Quota', 'Plan: Free'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 95,
+          resetLabel: '06/30 12:00',
+          usageLabel: '1.5d / 30d used',
+        },
+        {
+          id: 'spark-five-hour-0',
+          label: 'spark 5-hour limit',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+          usageLabel: '1.5h / 5h used',
+        },
+      ],
+    };
+    const firstFailedEntry = buildAccountQuotaRefreshFailureEntry(
+      target,
+      '502 bad gateway',
+      t,
+      activeEntry,
+      null
+    );
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    const secondFailedEntry = buildAccountQuotaRefreshFailureEntry(
+      target,
+      '504 timeout',
+      t,
+      firstFailedEntry,
+      observedEntry
+    );
+
+    expect(secondFailedEntry.error).toBe('504 timeout');
+    expect(secondFailedEntry.windows.map((window) => window.id)).toEqual([
+      'monthly',
+      'spark-five-hour-0',
+    ]);
+    expect(secondFailedEntry).toMatchObject({
+      planType: 'plus',
+      windows: [
+        {
+          id: 'monthly',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+        },
+        {
+          id: 'spark-five-hour-0',
+          remainingPercent: 70,
+          resetLabel: '07/01 01:00',
+        },
+      ],
+    });
+  });
+
+  it('merges older header entries into failed account quota state without clearing the failure', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const state = {
+      status: 'error' as const,
+      targetKey: 'codex::2::codex.json',
+      error: '502 bad gateway',
+      failedAtMs: 2_000,
+      entries: [
+        {
+          key: 'codex::2::codex.json',
+          provider: 'codex' as const,
+          providerLabel: 'Codex Quota',
+          authLabel: 'Auth',
+          fileName: 'codex.json',
+          planType: 'free',
+          metaLabels: ['Codex Quota', 'Plan: Free'],
+          error: '502 bad gateway',
+          failedAtMs: 2_000,
+          windows: [
+            {
+              id: 'monthly',
+              label: 'Monthly limit',
+              remainingPercent: 95,
+              resetLabel: '06/30 12:00',
+              usageLabel: '1.5d / 30d used',
+            },
+            {
+              id: 'spark-five-hour-0',
+              label: 'spark 5-hour limit',
+              remainingPercent: 70,
+              resetLabel: '07/01 01:00',
+              usageLabel: '1.5h / 5h used',
+            },
+          ],
+        },
+      ],
+    };
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaState(state, [target], [observedEntry]);
+
+    expect(merged).not.toBe(state);
+    expect(merged).toMatchObject({
+      status: 'error',
+      error: '502 bad gateway',
+      failedAtMs: 2_000,
+      entries: [
+        {
+          planType: 'plus',
+          error: '502 bad gateway',
+          failedAtMs: 2_000,
+          windows: [
+            {
+              id: 'monthly',
+              remainingPercent: 55,
+              resetLabel: '07/01 02:00',
+            },
+            {
+              id: 'spark-five-hour-0',
+              remainingPercent: 70,
+              resetLabel: '07/01 01:00',
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('recovers failed account quota state with newer header entries', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const state = {
+      status: 'error' as const,
+      targetKey: 'codex::2::codex.json',
+      error: '502 bad gateway',
+      failedAtMs: 1_000,
+      entries: [
+        {
+          key: 'codex::2::codex.json',
+          provider: 'codex' as const,
+          providerLabel: 'Codex Quota',
+          authLabel: 'Auth',
+          fileName: 'codex.json',
+          planType: 'free',
+          metaLabels: ['Codex Quota', 'Plan: Free'],
+          error: '502 bad gateway',
+          failedAtMs: 1_000,
+          windows: [
+            {
+              id: 'monthly',
+              label: 'Monthly limit',
+              remainingPercent: 95,
+              resetLabel: '06/30 12:00',
+              usageLabel: '1.5d / 30d used',
+            },
+            {
+              id: 'spark-five-hour-0',
+              label: 'spark 5-hour limit',
+              remainingPercent: 70,
+              resetLabel: '07/01 01:00',
+              usageLabel: '1.5h / 5h used',
+            },
+          ],
+        },
+      ],
+    };
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus', 'Observed from latest usage response headers'],
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaState(state, [target], [observedEntry]);
+
+    expect(merged).not.toBe(state);
+    expect(merged).toMatchObject({
+      status: 'success',
+      error: '',
+      failedAtMs: undefined,
+      entries: [
+        {
+          planType: 'plus',
+          observedAtMs: 2_000,
+          observedFromUsageHeaders: true,
+          windows: [
+            {
+              id: 'monthly',
+              remainingPercent: 55,
+              resetLabel: '07/01 02:00',
+            },
+            {
+              id: 'spark-five-hour-0',
+              remainingPercent: 70,
+              resetLabel: '07/01 01:00',
+            },
+          ],
+        },
+      ],
+    });
+    expect(merged?.entries[0].error).toBeUndefined();
+    expect(merged?.entries[0].failedAtMs).toBeUndefined();
+  });
+
+  it('does not merge later header entries when the account quota target set changed', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const state = {
+      status: 'error' as const,
+      targetKey: 'codex::1::old.json',
+      error: '502 bad gateway',
+      entries: [],
+    };
+    const observedEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Plan: Plus'],
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    expect(mergeObservedAccountQuotaState(state, [target], [observedEntry])).toBe(state);
+  });
+
   it('maps Antigravity grouped buckets into account quota entries', async () => {
     vi.mocked(fetchAntigravityQuota).mockResolvedValue({
       serverTimeOffsetMs: null,
@@ -338,14 +879,51 @@ describe('monitoringCenterPageModel account quota', () => {
     ]);
   });
 
+  it('maps Kimi quota rows without amount labels in account quota entries', async () => {
+    vi.mocked(fetchKimiQuota).mockResolvedValue([
+      {
+        id: 'daily',
+        label: 'Daily',
+        used: 25,
+        limit: 100,
+        resetHint: '2026-07-31T00:00:00Z',
+      },
+    ]);
+
+    const entry = await requestAccountQuota(
+      createTarget({
+        provider: 'kimi',
+        authIndex: '4',
+        fileName: 'kimi.json',
+      }),
+      t
+    );
+
+    expect(entry).toMatchObject({
+      provider: 'kimi',
+      providerLabel: 'Kimi Quota',
+      windows: [
+        {
+          id: 'daily',
+          label: 'Daily',
+          remainingPercent: 75,
+          usageLabel: null,
+        },
+      ],
+    });
+  });
+
   it('maps xAI billing into account quota entries', async () => {
     vi.mocked(fetchXaiQuota).mockResolvedValue({
       monthlyLimitCents: 10000,
-      usedCents: 2500,
+      usedCents: 12500,
+      includedUsedCents: 10000,
       onDemandCapCents: 5000,
+      onDemandUsedCents: 2500,
+      onDemandUsedPercent: 50,
       billingPeriodStart: '2026-05-01T00:00:00Z',
       billingPeriodEnd: '2026-06-01T00:00:00Z',
-      usedPercent: 25,
+      usedPercent: 100,
     });
 
     const entry = await requestAccountQuota(
@@ -364,9 +942,15 @@ describe('monitoringCenterPageModel account quota', () => {
       windows: [
         {
           id: 'monthly-limit',
-          label: 'Monthly billing limit',
-          remainingPercent: 75,
-          usageLabel: '$75.00 / $100.00 remaining',
+          label: 'Monthly credits',
+          remainingPercent: 0,
+          usageLabel: '$0.00 / $100.00 remaining',
+        },
+        {
+          id: 'pay-as-you-go',
+          label: 'Pay-as-you-go',
+          remainingPercent: 50,
+          usageLabel: '$25.00 / $50.00 remaining',
         },
       ],
     });
