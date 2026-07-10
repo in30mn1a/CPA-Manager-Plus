@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -1108,6 +1109,60 @@ func TestAnalyticsFilterOptionsIgnoreActiveScopeFilters(t *testing.T) {
 	}
 	if len(resp.FilterOptions.ChannelShare) != 2 {
 		t.Fatalf("channel/provider filter options should ignore active account/model filters: %#v", resp.FilterOptions.ChannelShare)
+	}
+}
+
+func TestAnalyticsFilterSelectorsReturnOnlyUsageAnalyticsOptions(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_350_000_000)
+	toMS := fromMS + 60*60*1000
+
+	alice := monitoringEvent("selector-alice", fromMS+1_000, "gpt-a", "auth-a", "source-a", false, 10, 5, 0, 0, 15, nil)
+	alice.AccountSnapshot = "alice@example.com"
+	alice.AuthProviderSnapshot = "codex"
+	alice.AuthFileSnapshot = "alice.json"
+	alice.APIKeyHash = "key-alice"
+	bob := monitoringEvent("selector-bob", fromMS+2_000, "gpt-b", "auth-b", "source-b", false, 10, 5, 0, 0, 15, nil)
+	bob.AccountSnapshot = "bob@example.com"
+	bob.AuthProviderSnapshot = "gemini"
+	bob.AuthFileSnapshot = "bob.json"
+	bob.APIKeyHash = "key-bob"
+
+	if _, err := db.InsertEvents(ctx, []usage.Event{alice, bob}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	resp, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   toMS,
+		Filters: Filters{
+			Models:   []string{"gpt-a"},
+			Accounts: []string{"alice@example.com"},
+		},
+		Include: Include{FilterOptions: true, FilterSelectors: true},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+	if resp.FilterOptions == nil {
+		t.Fatal("filter selectors are nil")
+	}
+	if !slices.Equal(resp.FilterOptions.Models, []string{"gpt-a", "gpt-b"}) {
+		t.Fatalf("models = %#v", resp.FilterOptions.Models)
+	}
+	if !slices.Equal(resp.FilterOptions.APIKeyHashes, []string{"key-alice", "key-bob"}) {
+		t.Fatalf("api key hashes = %#v", resp.FilterOptions.APIKeyHashes)
+	}
+	if !slices.Equal(resp.FilterOptions.Providers, []string{"codex", "gemini"}) {
+		t.Fatalf("providers = %#v", resp.FilterOptions.Providers)
+	}
+	if !slices.Equal(resp.FilterOptions.AuthFiles, []string{"alice.json", "bob.json"}) {
+		t.Fatalf("auth files = %#v", resp.FilterOptions.AuthFiles)
+	}
+	if len(resp.FilterOptions.AccountStats) != 0 || len(resp.FilterOptions.APIKeyStats) != 0 ||
+		len(resp.FilterOptions.ChannelShare) != 0 || len(resp.FilterOptions.ModelStats) != 0 {
+		t.Fatalf("filter selectors returned full stats: %#v", resp.FilterOptions)
 	}
 }
 

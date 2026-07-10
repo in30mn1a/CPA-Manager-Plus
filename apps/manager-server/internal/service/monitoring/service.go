@@ -80,6 +80,7 @@ type Include struct {
 	CredentialTimeline bool              `json:"credential_timeline"`
 	APIKeyStats        bool              `json:"api_key_stats"`
 	FilterOptions      bool              `json:"filter_options"`
+	FilterSelectors    bool              `json:"filter_selectors"`
 	Heatmap            bool              `json:"heatmap"`
 	AnomalyPoints      bool              `json:"anomaly_points"`
 	TaskBuckets        bool              `json:"task_buckets"`
@@ -487,6 +488,8 @@ type FilterOptions struct {
 	APIKeyStats      []APIKeyStatRow   `json:"api_key_stats,omitempty"`
 	ChannelShare     []ChannelShareRow `json:"channel_share,omitempty"`
 	ModelStats       []ModelStat       `json:"model_stats,omitempty"`
+	Models           []string          `json:"models,omitempty"`
+	APIKeyHashes     []string          `json:"api_key_hashes,omitempty"`
 	Providers        []string          `json:"providers,omitempty"`
 	AuthFiles        []string          `json:"auth_files,omitempty"`
 	ProjectIDs       []string          `json:"project_ids,omitempty"`
@@ -798,7 +801,13 @@ func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) 
 		}
 		response.APIKeyStats = buildAPIKeyStats(stats, prices)
 	}
-	if req.Include.FilterOptions {
+	if req.Include.FilterSelectors {
+		selectors, err := s.filterSelectors(ctx, filter)
+		if err != nil {
+			return Response{}, err
+		}
+		response.FilterOptions = selectors
+	} else if req.Include.FilterOptions {
 		options, err := s.filterOptions(ctx, filter, prices)
 		if err != nil {
 			return Response{}, err
@@ -1031,24 +1040,7 @@ func buildFilter(req Request) store.AnalyticsFilter {
 }
 
 func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilter, prices map[string]store.ModelPrice) (*FilterOptions, error) {
-	optionFilter := filter
-	optionFilter.Models = nil
-	optionFilter.Providers = nil
-	optionFilter.Accounts = nil
-	optionFilter.AuthFiles = nil
-	optionFilter.AuthIndices = nil
-	optionFilter.APIKeyHashes = nil
-	optionFilter.SourceHashes = nil
-	optionFilter.ProjectIDs = nil
-	optionFilter.RequestTypes = nil
-	optionFilter.HeaderErrorKinds = nil
-	optionFilter.HeaderErrorCodes = nil
-	optionFilter.HeaderQuotaPlans = nil
-	optionFilter.HeaderTraceIDs = nil
-	optionFilter.IncludeFailed = true
-	optionFilter.FailedOnly = false
-	optionFilter.MinLatencyMS = 0
-	optionFilter.CacheStatus = ""
+	optionFilter := filterOptionsBaseFilter(filter)
 
 	accountStats, err := s.store.AccountModelStatsWithFilter(ctx, optionFilter)
 	if err != nil {
@@ -1085,6 +1077,41 @@ func (s *Service) filterOptions(ctx context.Context, filter store.AnalyticsFilte
 		HeaderQuotaPlans: optionValues.HeaderQuotaPlans,
 		HeaderTraceIDs:   optionValues.HeaderTraceIDs,
 	}, nil
+}
+
+func (s *Service) filterSelectors(ctx context.Context, filter store.AnalyticsFilter) (*FilterOptions, error) {
+	values, err := s.store.FilterSelectorValuesWithFilter(ctx, filterOptionsBaseFilter(filter))
+	if err != nil {
+		return nil, err
+	}
+	return &FilterOptions{
+		Models:       values.Models,
+		APIKeyHashes: values.APIKeyHashes,
+		Providers:    values.Providers,
+		AuthFiles:    values.AuthFiles,
+	}, nil
+}
+
+func filterOptionsBaseFilter(filter store.AnalyticsFilter) store.AnalyticsFilter {
+	optionFilter := filter
+	optionFilter.Models = nil
+	optionFilter.Providers = nil
+	optionFilter.Accounts = nil
+	optionFilter.AuthFiles = nil
+	optionFilter.AuthIndices = nil
+	optionFilter.APIKeyHashes = nil
+	optionFilter.SourceHashes = nil
+	optionFilter.ProjectIDs = nil
+	optionFilter.RequestTypes = nil
+	optionFilter.HeaderErrorKinds = nil
+	optionFilter.HeaderErrorCodes = nil
+	optionFilter.HeaderQuotaPlans = nil
+	optionFilter.HeaderTraceIDs = nil
+	optionFilter.IncludeFailed = true
+	optionFilter.FailedOnly = false
+	optionFilter.MinLatencyMS = 0
+	optionFilter.CacheStatus = ""
+	return optionFilter
 }
 
 func normalizeGranularity(input string, fromMS int64, toMS int64) string {
