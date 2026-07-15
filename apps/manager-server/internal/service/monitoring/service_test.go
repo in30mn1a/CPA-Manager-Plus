@@ -1466,6 +1466,46 @@ func TestAnalyticsEventsPageReportsTotalCountWhilePaging(t *testing.T) {
 	}
 }
 
+func TestAnalyticsEventsPageUsesNormalizedTotalInput(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_778_400_000_000)
+	events := []usage.Event{
+		{
+			EventHash: "xai-included", TimestampMS: fromMS + 1, Timestamp: "2026-05-06T00:00:00Z",
+			ExecutorType: "XAIExecutor", Model: "grok-4", InputTokens: 100, CacheReadTokens: 40, OutputTokens: 20, CreatedAtMS: fromMS + 1,
+		},
+		{
+			EventHash: "claude-separate", TimestampMS: fromMS + 2, Timestamp: "2026-05-06T00:00:01Z",
+			ExecutorType: "ClaudeExecutor", Model: "claude-sonnet", InputTokens: 100, CacheReadTokens: 40, OutputTokens: 20, CreatedAtMS: fromMS + 2,
+		},
+	}
+	if _, err := db.InsertEvents(ctx, events); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	resp, err := New(db).Analytics(ctx, Request{
+		FromMS: fromMS,
+		ToMS:   fromMS + 60_000,
+		Include: Include{
+			EventsPage: &EventsPage{Limit: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+	if resp.Events == nil || len(resp.Events.Items) != 2 {
+		t.Fatalf("events = %#v", resp.Events)
+	}
+	inputs := map[string]int64{}
+	for _, item := range resp.Events.Items {
+		inputs[item.EventHash] = item.InputTokens
+	}
+	if inputs["xai-included"] != 100 || inputs["claude-separate"] != 140 {
+		t.Fatalf("normalized event inputs = %#v", inputs)
+	}
+}
+
 func TestAnalyticsEventsPageTotalCountRespectsFilters(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()
