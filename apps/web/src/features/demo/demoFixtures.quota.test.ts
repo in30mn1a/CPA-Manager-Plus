@@ -33,6 +33,13 @@ describe('Claude quota demo fixtures', () => {
         {
           kind: 'model_scoped',
           group: 'weekly',
+          percent: 12,
+          scope: { model: { displayName: 'Demo Model B' } },
+          is_active: false,
+        },
+        {
+          kind: 'model_scoped',
+          group: 'weekly',
           percent: 42,
           scope: { model: { displayName: 'Demo Model B' } },
           is_active: false,

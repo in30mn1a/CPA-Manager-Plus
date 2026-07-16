@@ -2869,6 +2869,14 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
               {
                 kind: 'model_scoped',
                 group: 'weekly',
+                percent: 12,
+                resets_at: new Date(now() + 4 * day).toISOString(),
+                scope: { model: { displayName: 'Demo Model B' } },
+                is_active: false,
+              },
+              {
+                kind: 'model_scoped',
+                group: 'weekly',
                 percent: 42,
                 resets_at: new Date(now() + 5 * day).toISOString(),
                 scope: { model: { displayName: 'Demo Model B' } },

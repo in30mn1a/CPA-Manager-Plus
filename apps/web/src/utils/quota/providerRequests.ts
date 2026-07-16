@@ -495,13 +495,17 @@ const resolveClaudeBaseLimitWindowId = (
 
 type ClaudeLimitWindowValues = Pick<ClaudeQuotaWindow, 'usedPercent' | 'resetLabel'>;
 
+const resolveClaudeLimitResetAt = (limit: Record<string, unknown>): string => {
+  const rawResetAt = limit.resets_at ?? limit.resetsAt ?? limit.reset_at ?? limit.resetAt;
+  return typeof rawResetAt === 'string' ? rawResetAt.trim() : '';
+};
+
 const parseClaudeLimitWindowValues = (
   limit: Record<string, unknown>
 ): ClaudeLimitWindowValues | null => {
   const rawPercent = normalizeNumberValue(limit.percent);
   const usedPercent = rawPercent !== null && rawPercent >= 0 ? rawPercent : null;
-  const rawResetAt = limit.resets_at ?? limit.resetsAt ?? limit.reset_at ?? limit.resetAt;
-  const resetAt = typeof rawResetAt === 'string' ? rawResetAt.trim() : '';
+  const resetAt = resolveClaudeLimitResetAt(limit);
   const resetLabel = formatQuotaResetTime(resetAt || undefined);
   if (usedPercent === null && resetLabel === '-') return null;
   return { usedPercent, resetLabel };
@@ -546,8 +550,23 @@ const encodeClaudeWindowIdPart = (value: string): string => {
 type ClaudeScopedWeeklyWindowEntry = {
   activityRank: number;
   identityKey: string;
+  resetAtRank: number;
   sortLabel: string;
+  usedPercentRank: number;
   window: ClaudeQuotaWindow;
+};
+
+const shouldReplaceClaudeScopedWindow = (
+  existing: ClaudeScopedWeeklyWindowEntry,
+  candidate: ClaudeScopedWeeklyWindowEntry
+): boolean => {
+  if (candidate.activityRank !== existing.activityRank) {
+    return candidate.activityRank > existing.activityRank;
+  }
+  if (candidate.usedPercentRank !== existing.usedPercentRank) {
+    return candidate.usedPercentRank > existing.usedPercentRank;
+  }
+  return candidate.resetAtRank > existing.resetAtRank;
 };
 
 const buildClaudeBaseLimitFallbacks = (
@@ -601,22 +620,26 @@ const buildClaudeScopedWeeklyWindows = (payload: ClaudeUsagePayload): ClaudeQuot
       const identityKey = modelId ? `id:${modelId}` : `label:${labelKey}`;
       const activeFlag = normalizeFlagValue(rawLimit.is_active ?? rawLimit.isActive);
       const activityRank = activeFlag === true ? 2 : activeFlag === undefined ? 1 : 0;
-      const existing = windowsByModel.get(identityKey);
-      if (existing && existing.activityRank >= activityRank) continue;
+      const resetTimestamp = Date.parse(resolveClaudeLimitResetAt(rawLimit));
 
       const idPart = modelId
         ? `id-${encodeClaudeWindowIdPart(modelId)}`
         : encodeClaudeWindowIdPart(labelKey);
-      windowsByModel.set(identityKey, {
+      const candidate: ClaudeScopedWeeklyWindowEntry = {
         activityRank,
         identityKey,
+        resetAtRank: Number.isFinite(resetTimestamp) ? resetTimestamp : -1,
         sortLabel: labelKey,
+        usedPercentRank: values.usedPercent ?? -1,
         window: {
           id: `weekly-scoped-${idPart}`,
           label,
           ...values,
         },
-      });
+      };
+      const existing = windowsByModel.get(identityKey);
+      if (existing && !shouldReplaceClaudeScopedWindow(existing, candidate)) continue;
+      windowsByModel.set(identityKey, candidate);
     } catch {
       continue;
     }

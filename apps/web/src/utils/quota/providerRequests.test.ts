@@ -683,6 +683,99 @@ describe('fetchClaudeQuota', () => {
     ]);
   });
 
+  it('prefers fresher quota values for same-rank scoped duplicates', async () => {
+    const percentResetAt = '2026-07-09T10:00:00Z';
+    const newerResetAt = '2026-07-10T10:00:00Z';
+    mocks.request
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        hasStatusCode: true,
+        header: {},
+        bodyText: '',
+        body: {
+          limits: [
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 10,
+              resets_at: '2026-07-08T10:00:00Z',
+              scope: { model: { id: 'model-percent', display_name: 'Old percent' } },
+              is_active: false,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 80,
+              resets_at: percentResetAt,
+              scope: { model: { id: 'model-percent', display_name: 'Fresh percent' } },
+              is_active: false,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 50,
+              resets_at: '2026-07-08T12:00:00Z',
+              scope: { model: { id: 'model-reset', display_name: 'Old reset' } },
+              is_active: true,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 50,
+              resets_at: newerResetAt,
+              scope: { model: { id: 'model-reset', display_name: 'Fresh reset' } },
+              is_active: true,
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 90,
+              resets_at: '2026-07-08T14:00:00Z',
+              scope: { model: { id: 'model-conservative', display_name: 'Higher usage' } },
+            },
+            {
+              kind: 'weekly_scoped',
+              group: 'weekly',
+              percent: 20,
+              resets_at: '2026-07-11T14:00:00Z',
+              scope: { model: { id: 'model-conservative', display_name: 'Later reset' } },
+            },
+          ],
+        },
+      })
+      .mockRejectedValueOnce(new Error('profile unavailable'));
+
+    const result = await fetchClaudeQuota(
+      {
+        name: 'claude.json',
+        type: 'claude',
+        authIndex: 'claude-1',
+      },
+      t
+    );
+
+    expect(result.windows).toEqual([
+      {
+        id: 'weekly-scoped-id-model-percent',
+        label: 'Fresh percent',
+        usedPercent: 80,
+        resetLabel: formatQuotaResetTime(percentResetAt),
+      },
+      {
+        id: 'weekly-scoped-id-model-reset',
+        label: 'Fresh reset',
+        usedPercent: 50,
+        resetLabel: formatQuotaResetTime(newerResetAt),
+      },
+      {
+        id: 'weekly-scoped-id-model-conservative',
+        label: 'Higher usage',
+        usedPercent: 90,
+        resetLabel: formatQuotaResetTime('2026-07-08T14:00:00Z'),
+      },
+    ]);
+  });
+
   it('ignores unscoped duplicates, unrelated kinds, and malformed scoped limits', async () => {
     mocks.request
       .mockResolvedValueOnce({
@@ -870,7 +963,7 @@ describe('fetchClaudeQuota', () => {
       ['seven-day', 'claude_quota.seven_day', 20],
       ['weekly-scoped-id-model-a1', 'Alpha', 40],
       ['weekly-scoped-id-model-a2', 'Alpha', 50],
-      ['weekly-scoped-id-model-z', 'Zulu', 70],
+      ['weekly-scoped-id-model-z', 'Zulu renamed', 90],
       ['seven-day-oauth-apps', 'claude_quota.seven_day_oauth_apps', 30],
     ]);
   });
