@@ -63,11 +63,11 @@ const splitTokens = (totalTokens: number) => {
   const cachedTokens = Math.round(totalTokens * 0.13);
   const cacheReadTokens = Math.round(cachedTokens * 0.78);
   const cacheCreationTokens = cachedTokens - cacheReadTokens;
-  const reasoningTokens = Math.max(0, totalTokens - inputTokens - outputTokens - cachedTokens);
+  const reasoningTokens = Math.max(0, totalTokens - inputTokens - outputTokens);
   return {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
-    cached_tokens: cachedTokens,
+    cached_tokens: 0,
     cache_read_tokens: cacheReadTokens,
     cache_creation_tokens: cacheCreationTokens,
     reasoning_tokens: reasoningTokens,
@@ -195,6 +195,17 @@ const initialRawConfig: Record<string, unknown> = {
       prefix: 'codex',
       'base-url': 'https://chatgpt.com',
       models: [{ name: 'gpt-5-codex', alias: 'Codex Team' }],
+    },
+  ],
+  'xai-api-key': [
+    {
+      'api-key': 'xai-demo-team-key',
+      'auth-index': 'xai-api-team-01',
+      prefix: 'xai-team',
+      'base-url': 'https://api.x.ai/v1',
+      priority: 9,
+      websockets: true,
+      models: [{ name: 'grok-4.5', alias: 'Grok Team' }],
     },
   ],
   'claude-api-key': [
@@ -1958,11 +1969,12 @@ const buildMonitoringAnalytics = (
     const profile = eventProfiles[index % eventProfiles.length];
     const failed = index % 9 === 0 || index % 22 === 0;
     const quotaFailure = failed && index % 2 === 0;
-    const inputTokens = 620 + ((index * 113) % 2600);
+    const uncachedInputTokens = 620 + ((index * 113) % 2600);
     const outputTokens = 210 + ((index * 71) % 980);
     const cachedTokens = index % 3 === 0 ? 180 + ((index * 17) % 520) : 0;
+    const inputTokens = uncachedInputTokens + cachedTokens;
     const reasoningTokens = index % 4 === 0 ? 80 + ((index * 13) % 360) : 0;
-    const totalTokens = inputTokens + outputTokens + cachedTokens + reasoningTokens;
+    const totalTokens = inputTokens + outputTokens + reasoningTokens;
     const timestampMs = analyticsNow - (index * 5 + (index % 4)) * minute;
     return {
       request_id: `demo-request-${String(index + 1).padStart(3, '0')}`,
@@ -1990,7 +2002,7 @@ const buildMonitoringAnalytics = (
       executor_type: profile.executor,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
-      cached_tokens: cachedTokens,
+      cached_tokens: 0,
       cache_read_tokens: Math.round(cachedTokens * 0.78),
       cache_creation_tokens: Math.round(cachedTokens * 0.22),
       reasoning_tokens: reasoningTokens,
@@ -2376,9 +2388,9 @@ const buildMonitoringAnalytics = (
         auth_index: 'codex-team-01',
         models: ['gpt-4.1-mini', 'gpt-4.1'],
         endpoints: ['/v1/chat/completions', '/v1/responses'],
-        input_tokens: 1_260_000,
+        input_tokens: 1_520_000,
         output_tokens: 540_000,
-        cached_tokens: 260_000,
+        cached_tokens: 0,
         cache_read_tokens: 210_000,
         cache_creation_tokens: 50_000,
         total_tokens: 2_060_000,
@@ -2397,9 +2409,9 @@ const buildMonitoringAnalytics = (
         auth_index: 'claude-team-01',
         models: ['claude-sonnet-4-5'],
         endpoints: ['/v1/messages'],
-        input_tokens: 1_480_000,
+        input_tokens: 1_660_000,
         output_tokens: 620_000,
-        cached_tokens: 180_000,
+        cached_tokens: 0,
         cache_read_tokens: 150_000,
         cache_creation_tokens: 30_000,
         total_tokens: 2_280_000,
@@ -2769,6 +2781,7 @@ export const getDemoConfigYaml = () =>
 
 export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
   const requestUrl = String(payload.url || '');
+  const authIndex = String(payload.authIndex || '');
   let body: unknown = { data: demoProviderModels.map((model) => ({ id: model.name })) };
 
   if (requestUrl.includes('/wham/usage')) {
@@ -2821,15 +2834,71 @@ export const getDemoApiCallResult = (payload: DemoApiCallPayload = {}) => {
       ],
     };
   } else if (requestUrl.includes('anthropic.com/api/oauth/profile')) {
-    body = { email: 'research@example.com', organization_name: 'Research Team' };
+    body =
+      authIndex === 'claude-team-01'
+        ? { account: { has_claude_max: true } }
+        : authIndex === 'claude-research-02'
+          ? { account: { has_claude_pro: true } }
+          : { email: 'research@example.com', organization_name: 'Research Team' };
   } else if (requestUrl.includes('anthropic.com/api/oauth/usage')) {
-    body = {
-      plan_type: 'pro',
-      usage: {
-        five_hour: { utilization: 0.44, resets_at: new Date(now() + 2 * hour).toISOString() },
-        seven_day: { utilization: 0.31, resets_at: new Date(now() + 3 * day).toISOString() },
-      },
+    const fiveHour = {
+      utilization: authIndex === 'claude-team-01' ? 44 : 18,
+      resets_at: new Date(now() + 2 * hour).toISOString(),
     };
+    const sevenDay = {
+      utilization: authIndex === 'claude-team-01' ? 31 : 22,
+      resets_at: new Date(now() + 3 * day).toISOString(),
+    };
+    body =
+      authIndex === 'claude-team-01'
+        ? {
+            limits: [
+              {
+                kind: 'session',
+                group: 'session',
+                percent: fiveHour.utilization,
+                resets_at: fiveHour.resets_at,
+                scope: null,
+                is_active: true,
+              },
+              {
+                kind: 'weekly_all',
+                group: 'weekly',
+                percent: sevenDay.utilization,
+                resets_at: sevenDay.resets_at,
+                scope: null,
+                is_active: true,
+              },
+              {
+                kind: 'weekly_scoped',
+                group: 'weekly',
+                percent: 78,
+                resets_at: new Date(now() + 4 * day).toISOString(),
+                scope: { model: { display_name: 'Demo Model A' } },
+                is_active: true,
+              },
+              {
+                kind: 'model_scoped',
+                group: 'weekly',
+                percent: 12,
+                resets_at: new Date(now() + 4 * day).toISOString(),
+                scope: { model: { displayName: 'Demo Model B' } },
+                is_active: false,
+              },
+              {
+                kind: 'model_scoped',
+                group: 'weekly',
+                percent: 42,
+                resets_at: new Date(now() + 5 * day).toISOString(),
+                scope: { model: { displayName: 'Demo Model B' } },
+                is_active: false,
+              },
+            ],
+          }
+        : {
+            five_hour: fiveHour,
+            seven_day: sevenDay,
+          };
   } else if (requestUrl.includes('api.kimi.com')) {
     body = {
       items: [

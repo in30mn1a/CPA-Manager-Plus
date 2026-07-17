@@ -54,6 +54,7 @@ import {
   hasUsageHeaderQuotaSignal,
 } from '@/utils/usageHeaderSnapshots';
 import { normalizeAuthIndex } from '@/utils/authIndex';
+import { formatXaiBillingDiagnostics } from '@/utils/quota/xaiPresentation';
 import type { QuotaRenderHelpers } from './QuotaCard';
 import styles from '@/features/quota/QuotaPage.module.scss';
 
@@ -885,13 +886,7 @@ const renderCodexItems = (
       const windowLabel = window.labelKey
         ? t(window.labelKey, window.labelParams as Record<string, string | number>)
         : window.label;
-      const infoIcon = renderCodexWindowInfo(
-        quota,
-        window,
-        windowLabel,
-        t,
-        styleMap
-      );
+      const infoIcon = renderCodexWindowInfo(quota, window, windowLabel, t, styleMap);
 
       return h(
         'div',
@@ -1251,6 +1246,20 @@ const renderXaiItems = (
     return h('div', { className: styleMap.quotaMessage }, t('xai_quota.empty_data'));
   }
 
+  if (billing.officialApiHealth) {
+    return h(
+      React.Fragment,
+      null,
+      h(
+        'div',
+        { className: styleMap.codexPlan },
+        h('span', { className: styleMap.codexPlanLabel }, t('xai_quota.plan_label')),
+        h('span', { className: styleMap.codexPlanValue }, t('xai_quota.official_api_plan'))
+      ),
+      h('div', { className: styleMap.quotaMessage }, t('xai_quota.official_api_health'))
+    );
+  }
+
   const clampedUsed =
     billing.usedPercent === null ? null : Math.max(0, Math.min(100, billing.usedPercent));
   const remaining = clampedUsed === null ? null : Math.max(0, Math.min(100, 100 - clampedUsed));
@@ -1285,6 +1294,15 @@ const renderXaiItems = (
     Boolean(billing.billingPeriodEnd);
 
   const nodes: ReactNode[] = [
+    billing.partial
+      ? h(
+          'div',
+          { key: 'partial-diagnostic', className: styleMap.quotaMessage },
+          t('xai_quota.partial_data', {
+            details: formatXaiBillingDiagnostics(billing.diagnostics, t),
+          })
+        )
+      : null,
     plan
       ? h(
           'div',
