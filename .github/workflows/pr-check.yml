@@ -165,6 +165,11 @@ jobs:
       - name: Test native control scripts
         run: npx vitest run tests/nativeControlScripts.test.mjs
 
+      - name: Validate native packaging script syntax
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash -n bin/release/package-native.sh
+
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
@@ -184,6 +189,9 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Validate Docker Compose configuration
+        run: docker compose -f docker-compose.manager.yml config
 
       - name: Build Manager Server image
         uses: docker/build-push-action@v6

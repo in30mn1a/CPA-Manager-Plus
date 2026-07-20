@@ -24,10 +24,8 @@ describe('PR check classifier', () => {
     });
   });
 
-  it('skips application checks for release workflow and ordinary docs changes', () => {
-    expect(classifyChangedFiles(['.github/workflows/release.yml', 'docs/release.md'])).toEqual(
-      noChecks
-    );
+  it('skips application checks for ordinary non-site docs changes', () => {
+    expect(classifyChangedFiles(['docs/release.md'])).toEqual(noChecks);
   });
 
   it('runs frontend and Docker checks for web changes', () => {
@@ -63,6 +61,23 @@ describe('PR check classifier', () => {
     });
   });
 
+  it('runs build coverage for native packaging changes', () => {
+    expect(classifyChangedFiles(['bin/release/package-native.sh'])).toEqual({
+      ...noChecks,
+      frontend: true,
+      manager_server: true,
+      windows_sqlite: true,
+      native_control: true,
+    });
+  });
+
+  it('runs Docker validation for Compose changes', () => {
+    expect(classifyChangedFiles(['docker-compose.manager.yml'])).toEqual({
+      ...noChecks,
+      docker: true,
+    });
+  });
+
   it('runs Node and Docker checks for root dependency changes', () => {
     expect(classifyChangedFiles(['package-lock.json'])).toEqual({
       ...noChecks,
@@ -72,9 +87,10 @@ describe('PR check classifier', () => {
     });
   });
 
-  it('runs all checks when the classifier or PR workflow changes', () => {
+  it('runs all checks when the classifier or any workflow changes', () => {
     for (const filePath of [
       '.github/workflows/pr-check.yml',
+      '.github/workflows/release.yml',
       'bin/ci/classify-pr-checks.mjs',
       'tests/prCheckClassifier.test.mjs',
     ]) {

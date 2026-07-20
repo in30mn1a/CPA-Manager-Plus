@@ -23,7 +23,7 @@ const allChecks = (enabled) =>
   Object.fromEntries(CHECK_NAMES.map((checkName) => [checkName, enabled]));
 
 const triggersAllChecks = (filePath) =>
-  filePath === '.github/workflows/pr-check.yml' ||
+  startsWithPath(filePath, '.github/workflows') ||
   filePath === 'bin/ci/classify-pr-checks.mjs' ||
   filePath === 'tests/prCheckClassifier.test.mjs';
 
@@ -37,9 +37,11 @@ const triggersFrontend = (filePath) =>
   filePath === 'package-lock.json' ||
   filePath === 'eslint.config.js' ||
   filePath === 'bin/install-cpamp.sh' ||
+  filePath === 'bin/release/package-native.sh' ||
   filePath === 'bin/release/check-web-demo-isolation.mjs';
 
-const triggersManagerServer = (filePath) => startsWithPath(filePath, 'apps/manager-server');
+const triggersManagerServer = (filePath) =>
+  startsWithPath(filePath, 'apps/manager-server') || filePath === 'bin/release/package-native.sh';
 
 const triggersNativeControl = (filePath) =>
   startsWithPath(filePath, 'bin/native') ||
@@ -52,6 +54,7 @@ const triggersDocker = (filePath) =>
   startsWithPath(filePath, 'apps/web') ||
   startsWithPath(filePath, 'apps/manager-server') ||
   filePath === 'Dockerfile.manager-server' ||
+  filePath === 'docker-compose.manager.yml' ||
   filePath === '.dockerignore' ||
   filePath === 'package.json' ||
   filePath === 'package-lock.json';
