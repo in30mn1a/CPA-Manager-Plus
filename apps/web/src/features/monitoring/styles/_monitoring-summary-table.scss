@@ -1092,20 +1092,6 @@
     color: var(--monitor-muted);
   }
 
-  .realtimeFailureStatus {
-    position: relative;
-    display: inline-flex;
-    width: fit-content;
-    max-width: 100%;
-    align-items: center;
-    outline: none;
-  }
-
-  .realtimeFailureStatus:focus-visible .realtimeRequestStatus {
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-
   .realtimeRequestStatus {
     display: inline-flex;
     align-items: center;

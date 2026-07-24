@@ -302,6 +302,7 @@ describe('RealtimeEventsPanel', () => {
     expect(markup).toContain('Requests 20 / 21');
     expect(markup).toContain('Tokens 999000 / 1000000');
     expect(markup).toContain('Zero retention: No');
+    expect(markup).toContain(styles.realtimeSuccessDiagnosticTooltip);
   });
 
   it('renders safe defaults when optional usage fields are missing', () => {
