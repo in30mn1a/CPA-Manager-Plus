@@ -22,7 +22,11 @@ import {
   createEmptyPriceDraft,
   createPriceDraft,
   filterModelPriceRows,
+  formatContextThreshold,
   formatPriceUnit,
+  formatServiceTierRule,
+  resolveContextTierDisplayPrice,
+  resolveServiceTierDisplayPrice,
   type ModelPriceFilter,
   type PriceDraft,
 } from '@/features/monitoring/model/modelPricesPageModel';
@@ -135,8 +139,9 @@ export function ModelPricesPage() {
           imported: result.imported,
           candidates: result.candidates?.length ?? 0,
           unmatched: result.unmatched?.length ?? 0,
+          preserved: result.preserved?.length ?? 0,
         }),
-        'success'
+        result.preserved?.length ? 'warning' : 'success'
       );
     } catch (error: unknown) {
       const message = resolveErrorMessage(error, t('common.unknown_error'));
@@ -360,6 +365,17 @@ export function ModelPricesPage() {
                 {t('common.save')}
               </Button>
             </div>
+            {(modelPrices[draft.model.trim()]?.contextTiers?.length ?? 0) +
+              (modelPrices[draft.model.trim()]?.serviceTiers?.length ?? 0) >
+            0 ? (
+              <div className={styles.tierClearNotice}>
+                {t('model_prices.manual_clears_pricing_rules', {
+                  count:
+                    (modelPrices[draft.model.trim()]?.contextTiers?.length ?? 0) +
+                    (modelPrices[draft.model.trim()]?.serviceTiers?.length ?? 0),
+                })}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -379,6 +395,7 @@ export function ModelPricesPage() {
                   <th>{t('usage_stats.model_price_cache')}</th>
                   <th>{t('usage_stats.model_price_cache_read')}</th>
                   <th>{t('usage_stats.model_price_cache_creation')}</th>
+                  <th>{t('model_prices.pricing_rules')}</th>
                   <th>{t('model_prices.source')}</th>
                   <th>{t('common.action')}</th>
                 </tr>
@@ -393,6 +410,8 @@ export function ModelPricesPage() {
                   const selectedCandidate =
                     candidates.find((candidate) => candidate.sourceModelId === selectedSource) ??
                     candidates[0];
+                  const contextTiers = row.price?.contextTiers ?? [];
+                  const serviceTiers = row.price?.serviceTiers ?? [];
 
                   return (
                     <tr key={row.model}>
@@ -412,6 +431,52 @@ export function ModelPricesPage() {
                       <td>{formatPriceUnit(row.price?.cache)}</td>
                       <td>{formatPriceUnit(row.price?.cacheRead)}</td>
                       <td>{formatPriceUnit(row.price?.cacheCreation)}</td>
+                      <td className={styles.tierCell}>
+                        {contextTiers.length > 0 || serviceTiers.length > 0 ? (
+                          <div className={styles.tierList}>
+                            {contextTiers.map((tier) => {
+                              const effectivePrice = resolveContextTierDisplayPrice(
+                                row.price,
+                                tier
+                              );
+                              return (
+                                <span
+                                  key={tier.thresholdTokens}
+                                  className={styles.tierBadge}
+                                  title={`${t('usage_stats.model_price_prompt')}: ${formatPriceUnit(effectivePrice.prompt)} · ${t('usage_stats.model_price_completion')}: ${formatPriceUnit(effectivePrice.completion)}`}
+                                >
+                                  <strong>{`>${formatContextThreshold(tier.thresholdTokens)}`}</strong>
+                                  <small>
+                                    {formatPriceUnit(effectivePrice.prompt)} /{' '}
+                                    {formatPriceUnit(effectivePrice.completion)}
+                                  </small>
+                                </span>
+                              );
+                            })}
+                            {serviceTiers.map((tier) => {
+                              const effectivePrice = resolveServiceTierDisplayPrice(
+                                row.price,
+                                tier
+                              );
+                              return (
+                                <span
+                                  key={`${tier.mode}:${tier.serviceTier}`}
+                                  className={styles.tierBadge}
+                                  title={`${t('usage_stats.model_price_prompt')}: ${formatPriceUnit(effectivePrice.prompt)} · ${t('usage_stats.model_price_completion')}: ${formatPriceUnit(effectivePrice.completion)}`}
+                                >
+                                  <strong>{formatServiceTierRule(tier)}</strong>
+                                  <small>
+                                    {formatPriceUnit(effectivePrice.prompt)} /{' '}
+                                    {formatPriceUnit(effectivePrice.completion)}
+                                  </small>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <span className={styles.sourcePlaceholder}>--</span>
+                        )}
+                      </td>
                       <td className={styles.sourceCell}>
                         {row.price ? (
                           <div className={styles.sourceContent}>

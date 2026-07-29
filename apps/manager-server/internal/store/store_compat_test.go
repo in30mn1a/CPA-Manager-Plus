@@ -356,6 +356,13 @@ func TestStoreCompatModelPricesAndAPIKeyAliases(t *testing.T) {
 		"gpt-a": {
 			Prompt: 1, Completion: 2, Cache: 0.5, CacheRead: 0.25, CacheCreation: 1.5,
 			PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true, CacheCreationConfigured: true,
+			ContextTiers: []ModelPriceContextTier{
+				{ThresholdTokens: 200_000, Prompt: 0, Completion: 8, PromptConfigured: true, CompletionConfigured: true},
+				{ThresholdTokens: 32_000, Prompt: 3, Completion: 4, CacheRead: 0, PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true},
+			},
+			ServiceTiers: []ModelPriceServiceTier{
+				{Mode: "fast", ServiceTier: "priority", Prompt: 2.5, Completion: 5, PromptConfigured: true, CompletionConfigured: true},
+			},
 		},
 		"gpt-b": {Prompt: 0, Completion: 0, Cache: 0, PromptConfigured: true, CompletionConfigured: true},
 	})
@@ -369,7 +376,11 @@ func TestStoreCompatModelPricesAndAPIKeyAliases(t *testing.T) {
 	if len(prices) != 2 || prices["gpt-a"].Prompt != 1 || prices["gpt-a"].CacheRead != 0.25 ||
 		prices["gpt-a"].CacheCreation != 1.5 || !prices["gpt-a"].CacheReadConfigured ||
 		!prices["gpt-a"].CacheCreationConfigured || prices["gpt-b"].Completion != 0 ||
-		!prices["gpt-b"].PromptConfigured || !prices["gpt-b"].CompletionConfigured {
+		!prices["gpt-b"].PromptConfigured || !prices["gpt-b"].CompletionConfigured ||
+		len(prices["gpt-a"].ContextTiers) != 2 || prices["gpt-a"].ContextTiers[0].ThresholdTokens != 32_000 ||
+		prices["gpt-a"].ContextTiers[1].Prompt != 0 || !prices["gpt-a"].ContextTiers[1].PromptConfigured ||
+		len(prices["gpt-a"].ServiceTiers) != 1 || prices["gpt-a"].ServiceTiers[0].Mode != "fast" ||
+		prices["gpt-a"].ServiceTiers[0].ServiceTier != "priority" {
 		t.Fatalf("prices = %#v", prices)
 	}
 
@@ -378,8 +389,20 @@ func TestStoreCompatModelPricesAndAPIKeyAliases(t *testing.T) {
 			Prompt: 5, Completion: 6, Cache: 1, CacheRead: 0.75, CacheCreation: 4,
 			PromptConfigured: true, CompletionConfigured: true, CacheReadConfigured: true, CacheCreationConfigured: true,
 			Source: "litellm",
+			ContextTiers: []ModelPriceContextTier{
+				{ThresholdTokens: 128_000, Prompt: 7, Completion: 9, PromptConfigured: true, CompletionConfigured: true},
+			},
+			ServiceTiers: []ModelPriceServiceTier{
+				{Mode: "FAST", ServiceTier: "PRIORITY", Prompt: 11, PromptConfigured: true},
+			},
 		},
-		"bad": {Prompt: -1, Completion: 0, Cache: 0},
+		"bad": {
+			Prompt: 1,
+			ContextTiers: []ModelPriceContextTier{
+				{ThresholdTokens: 32_000, Prompt: 2, PromptConfigured: true},
+				{ThresholdTokens: 32_000, Prompt: 3, PromptConfigured: true},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("upsert synced prices: %v", err)
@@ -393,8 +416,24 @@ func TestStoreCompatModelPricesAndAPIKeyAliases(t *testing.T) {
 	}
 	if prices["gpt-a"].Prompt != 5 || prices["gpt-a"].CacheRead != 0.75 ||
 		prices["gpt-a"].CacheCreation != 4 || prices["gpt-a"].SyncedAtMS == nil ||
-		prices["gpt-a"].Source != "litellm" {
+		prices["gpt-a"].Source != "litellm" || len(prices["gpt-a"].ContextTiers) != 1 ||
+		prices["gpt-a"].ContextTiers[0].ThresholdTokens != 128_000 || len(prices["gpt-a"].ServiceTiers) != 1 ||
+		prices["gpt-a"].ServiceTiers[0].Mode != "fast" || prices["gpt-a"].ServiceTiers[0].Prompt != 11 {
 		t.Fatalf("synced price = %#v", prices["gpt-a"])
+	}
+
+	if err := db.SaveModelPrices(context.Background(), map[string]ModelPrice{
+		"gpt-a": {Prompt: 6, Completion: 12, Source: "manual"},
+	}); err != nil {
+		t.Fatalf("save manual replacement: %v", err)
+	}
+	prices, err = db.LoadModelPrices(context.Background())
+	if err != nil {
+		t.Fatalf("reload manual replacement: %v", err)
+	}
+	if len(prices) != 1 || prices["gpt-a"].Source != "manual" || len(prices["gpt-a"].ContextTiers) != 0 ||
+		len(prices["gpt-a"].ServiceTiers) != 0 {
+		t.Fatalf("manual replacement retained synchronized rules: %#v", prices)
 	}
 
 	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

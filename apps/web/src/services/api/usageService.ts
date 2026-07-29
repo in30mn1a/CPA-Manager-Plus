@@ -241,6 +241,8 @@ export interface CodexInspectionRun {
   settings?: ManagerCodexInspectionConfig;
   createdAtMs: number;
   updatedAtMs: number;
+  active?: boolean;
+  cancellable?: boolean;
 }
 
 export interface CodexInspectionQuotaWindow {
@@ -366,6 +368,7 @@ export interface ModelPriceSyncResponse extends ModelPricesResponse {
   matched?: Record<string, ModelPrice>;
   candidates?: ModelPriceSyncCandidateSet[];
   unmatched?: string[];
+  preserved?: string[];
   proxyUsed?: boolean;
   sourceResults?: ModelPriceSyncSourceResult[];
 }
@@ -2044,6 +2047,53 @@ export const usageServiceApi = {
     });
   },
 
+  cancelCodexInspectionRun: async (
+    base: string,
+    managementKey: string | undefined,
+    runId: number
+  ): Promise<CodexInspectionRunDetail> => {
+    if (__DEMO_SITE__ && isDemoMode()) {
+      const detail = readDemoCodexInspectionRunState();
+      if (runId !== detail.run.id) {
+        throw createDemoCodexInspectionError('codex inspection run not found', 404);
+      }
+      if (detail.run.status === 'cancelled') {
+        return detail;
+      }
+      if (detail.run.status !== 'running' && detail.run.status !== 'cancelling') {
+        throw createDemoCodexInspectionError('codex inspection run cannot be cancelled', 409);
+      }
+      const completedAt = Date.now();
+      detail.run.status = 'cancelled';
+      detail.run.active = false;
+      detail.run.cancellable = false;
+      detail.run.finishedAtMs = completedAt;
+      detail.run.updatedAtMs = completedAt;
+      detail.run.error = '用户主动取消巡检';
+      detail.logs.push({
+        id: detail.logs.reduce((maximum, entry) => Math.max(maximum, entry.id), 0) + 1,
+        runId,
+        level: 'warning',
+        message: '凭证健康巡检已取消',
+        detail: { status: 'cancelled' },
+        createdAtMs: completedAt,
+      });
+      return replaceDemoCodexInspectionRunState(detail);
+    }
+
+    return withUsageServiceError(async () => {
+      const response = await axios.post<CodexInspectionRunDetail>(
+        buildUrl(base, `/v0/management/codex-inspection/runs/${runId}/cancel`),
+        undefined,
+        {
+          timeout: USAGE_SERVICE_TIMEOUT_MS,
+          headers: authHeaders(managementKey),
+        }
+      );
+      return response.data;
+    });
+  },
+
   executeCodexInspectionActions: async (
     base: string,
     managementKey: string | undefined,
@@ -2430,7 +2480,7 @@ export const usageServiceApi = {
         buildUrl(base, '/v0/management/model-prices/sync'),
         models ? { models } : {},
         {
-          timeout: 30 * 1000,
+          timeout: 45 * 1000,
           headers: authHeaders(managementKey),
         }
       );

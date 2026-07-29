@@ -4,20 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpa"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
 const (
+	SyncSourceModelsDev  = "models.dev"
 	SyncSourceLiteLLM    = "litellm"
 	SyncSourceOpenRouter = "openrouter"
 	SyncSourceMulti      = "multi"
@@ -30,6 +34,8 @@ const (
 const maxSyncCandidates = 8
 const minCandidateScore = 0.55
 const minWeakCandidateScore = 0.34
+const defaultSyncSourceTimeout = 10 * time.Second
+const defaultSyncProxyResolutionTimeout = 5 * time.Second
 
 type UpdateRequest struct {
 	Prices map[string]store.ModelPrice `json:"prices"`
@@ -47,6 +53,7 @@ type SyncResult struct {
 	Matched       map[string]store.ModelPrice `json:"matched,omitempty"`
 	Candidates    []SyncCandidateSet          `json:"candidates,omitempty"`
 	Unmatched     []string                    `json:"unmatched,omitempty"`
+	Preserved     []string                    `json:"preserved,omitempty"`
 	ProxyUsed     bool                        `json:"proxyUsed,omitempty"`
 	SourceResults []SyncSourceResult          `json:"sourceResults,omitempty"`
 	Prices        map[string]store.ModelPrice `json:"prices"`
@@ -76,9 +83,13 @@ type SetupResolver interface {
 }
 
 type Service struct {
-	store         *store.Store
-	syncSources   []priceSyncSource
-	setupResolver SetupResolver
+	store                 *store.Store
+	syncSources           []priceSyncSource
+	syncSourceTimeout     time.Duration
+	syncProxyTimeout      time.Duration
+	setupResolver         SetupResolver
+	notifierMu            sync.RWMutex
+	pricesChangedNotifier func()
 }
 
 type fetchModelPricesFunc func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error)
@@ -94,13 +105,47 @@ func New(store *store.Store, syncURL *string, setupResolver ...SetupResolver) *S
 }
 
 func NewMultiSource(store *store.Store, liteLLMSyncURL *string, openRouterSyncURL *string, setupResolver ...SetupResolver) *Service {
+	return newMultiSource(store, nil, liteLLMSyncURL, openRouterSyncURL, setupResolver...)
+}
+
+// NewMultiSourceWithModelsDev creates the production source chain. models.dev
+// is deliberately first so its provider-scoped records win over the existing
+// LiteLLM and OpenRouter fallbacks when both sources describe the same model.
+func NewMultiSourceWithModelsDev(
+	store *store.Store,
+	modelsDevSyncURL *string,
+	liteLLMSyncURL *string,
+	openRouterSyncURL *string,
+	setupResolver ...SetupResolver,
+) *Service {
+	return newMultiSource(store, modelsDevSyncURL, liteLLMSyncURL, openRouterSyncURL, setupResolver...)
+}
+
+func newMultiSource(
+	store *store.Store,
+	modelsDevSyncURL *string,
+	liteLLMSyncURL *string,
+	openRouterSyncURL *string,
+	setupResolver ...SetupResolver,
+) *Service {
 	var resolver SetupResolver
 	if len(setupResolver) > 0 {
 		resolver = setupResolver[0]
 	}
-	sources := []priceSyncSource{
-		{Source: SyncSourceLiteLLM, URL: liteLLMSyncURL, Fetch: fetchLiteLLMModelPrices},
+	sources := make([]priceSyncSource, 0, 3)
+	if modelsDevSyncURL != nil && strings.TrimSpace(*modelsDevSyncURL) != "" {
+		modelsDevCache := &modelsDevPriceCache{}
+		sources = append(sources, priceSyncSource{
+			Source: SyncSourceModelsDev,
+			URL:    modelsDevSyncURL,
+			Fetch:  modelsDevCache.fetch,
+		})
 	}
+	sources = append(sources, priceSyncSource{
+		Source: SyncSourceLiteLLM,
+		URL:    liteLLMSyncURL,
+		Fetch:  fetchLiteLLMModelPrices,
+	})
 	if openRouterSyncURL != nil {
 		sources = append(sources, priceSyncSource{
 			Source: SyncSourceOpenRouter,
@@ -108,7 +153,13 @@ func NewMultiSource(store *store.Store, liteLLMSyncURL *string, openRouterSyncUR
 			Fetch:  fetchOpenRouterModelPrices,
 		})
 	}
-	return &Service{store: store, syncSources: sources, setupResolver: resolver}
+	return &Service{
+		store:             store,
+		syncSources:       sources,
+		syncSourceTimeout: defaultSyncSourceTimeout,
+		syncProxyTimeout:  defaultSyncProxyResolutionTimeout,
+		setupResolver:     resolver,
+	}
 }
 
 func (s *Service) List(ctx context.Context) (map[string]store.ModelPrice, error) {
@@ -119,6 +170,21 @@ func (s *Service) UsageSummary(ctx context.Context, limit int) (store.ModelUsage
 	return s.store.ModelUsageSummary(ctx, limit)
 }
 
+func (s *Service) SetPricesChangedNotifier(notifier func()) {
+	s.notifierMu.Lock()
+	s.pricesChangedNotifier = notifier
+	s.notifierMu.Unlock()
+}
+
+func (s *Service) notifyPricesChanged() {
+	s.notifierMu.RLock()
+	notifier := s.pricesChangedNotifier
+	s.notifierMu.RUnlock()
+	if notifier != nil {
+		notifier()
+	}
+}
+
 func (s *Service) Replace(ctx context.Context, prices map[string]store.ModelPrice) (map[string]store.ModelPrice, error) {
 	if prices == nil {
 		return nil, errors.New("prices are required")
@@ -126,6 +192,7 @@ func (s *Service) Replace(ctx context.Context, prices map[string]store.ModelPric
 	if err := s.store.SaveModelPrices(ctx, prices); err != nil {
 		return nil, err
 	}
+	s.notifyPricesChanged()
 	return s.store.LoadModelPrices(ctx)
 }
 
@@ -134,14 +201,25 @@ func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	remotePrices, skipped, sources, sourceResults, err := s.fetchAllModelPrices(ctx, client)
+	remotePrices, skipped, sources, sourceResults, err := s.fetchAllModelPrices(ctx, client, req.Models)
 	if err != nil {
 		return SyncResult{}, err
 	}
 	selection := selectModelPrices(remotePrices, req.Models)
+	preserved := []string(nil)
+	if hasFailedSyncSource(sourceResults) {
+		existingPrices, err := s.store.LoadModelPrices(ctx)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		selection, preserved = preserveFailedSourcePrices(selection, existingPrices, sourceResults, req.Models)
+	}
 	result, err := s.store.UpsertSyncedModelPrices(ctx, selection.Prices)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	if result.Imported > 0 {
+		s.notifyPricesChanged()
 	}
 	prices, err := s.store.LoadModelPrices(ctx)
 	if err != nil {
@@ -155,6 +233,7 @@ func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error)
 		Matched:       selection.Matched,
 		Candidates:    selection.Candidates,
 		Unmatched:     selection.Unmatched,
+		Preserved:     preserved,
 		ProxyUsed:     proxyUsed,
 		SourceResults: sourceResults,
 		Prices:        prices,
@@ -165,9 +244,12 @@ func (s *Service) SyncFromLiteLLM(ctx context.Context, req SyncRequest) (SyncRes
 	return s.Sync(ctx, req)
 }
 
-func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client) (map[string]store.ModelPrice, int, []string, []SyncSourceResult, error) {
+func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, models []string) (map[string]store.ModelPrice, int, []string, []SyncSourceResult, error) {
 	remotePrices := map[string]store.ModelPrice{}
 	selectedPriorities := map[string]int{}
+	selectedNormalizedPriorities := map[string]int{}
+	modelsDevModelIDs := map[string]struct{}{}
+	requestedModels := normalizedRequestedModels(models)
 	sources := make([]string, 0, len(s.syncSources))
 	sourceResults := make([]SyncSourceResult, 0, len(s.syncSources))
 	failures := []string{}
@@ -182,7 +264,13 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client) 
 			failures = append(failures, source.Source+": "+result.Error)
 			continue
 		}
-		prices, skipped, err := source.Fetch(ctx, syncURL, client)
+		sourceCtx := ctx
+		cancel := func() {}
+		if s.syncSourceTimeout > 0 {
+			sourceCtx, cancel = context.WithTimeout(ctx, s.syncSourceTimeout)
+		}
+		prices, skipped, err := source.Fetch(sourceCtx, syncURL, client)
+		cancel()
 		result.Skipped = skipped
 		if err != nil {
 			result.Error = err.Error()
@@ -194,8 +282,20 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client) 
 		sourceResults = append(sourceResults, result)
 		sources = append(sources, source.Source)
 		totalSkipped += skipped
+		if source.Source == SyncSourceModelsDev {
+			modelsDevModelIDs = collectModelsDevModelIDs(prices)
+		}
 
 		for modelID, price := range prices {
+			normalizedModelID := strings.ToLower(strings.TrimSpace(modelID))
+			if source.Source != SyncSourceModelsDev {
+				if _, blocked := modelsDevModelIDs[normalizedModelID]; blocked {
+					continue
+				}
+				if selectedPriority, exists := selectedNormalizedPriorities[normalizedModelID]; exists && selectedPriority < priority {
+					continue
+				}
+			}
 			if price.Source == "" {
 				price.Source = source.Source
 			}
@@ -207,6 +307,10 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client) 
 			}
 			remotePrices[modelID] = price
 			selectedPriorities[modelID] = priority
+			selectedNormalizedPriorities[normalizedModelID] = priority
+		}
+		if len(requestedModels) > 0 && modelPricesCoverRequested(remotePrices, requestedModels) {
+			break
 		}
 	}
 
@@ -214,9 +318,73 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client) 
 		if len(failures) == 0 {
 			failures = append(failures, "no price sync sources configured")
 		}
-		return nil, 0, nil, sourceResults, errors.New("model price sync failed: " + strings.Join(failures, "; "))
+		return nil, 0, nil, sourceResults, errors.New("model price sync failed; existing prices were not changed: " + strings.Join(failures, "; "))
 	}
 	return remotePrices, totalSkipped, sources, sourceResults, nil
+}
+
+// preserveFailedSourcePrices prevents a transient failure of a preferred
+// source from automatically downgrading an existing price to a lower-priority
+// source. A successful preferred-source response that omits a model still
+// permits the normal fallback behavior.
+func preserveFailedSourcePrices(
+	selection priceSelectionResult,
+	existingPrices map[string]store.ModelPrice,
+	sourceResults []SyncSourceResult,
+	requestedModels []string,
+) (priceSelectionResult, []string) {
+	failedSources := make(map[string]bool, len(sourceResults))
+	for _, result := range sourceResults {
+		if result.Error != "" {
+			failedSources[result.Source] = true
+		}
+	}
+	if len(failedSources) == 0 {
+		return selection, nil
+	}
+	requestedScope := requestedModelScope(requestedModels)
+	preserved := make([]string, 0)
+	for modelID, existing := range existingPrices {
+		if requestedScope != nil && !requestedScope[modelID] {
+			continue
+		}
+		if !failedSources[existing.Source] {
+			continue
+		}
+		candidate, hasCandidate := selection.Prices[modelID]
+		if hasCandidate && modelPriceSourcePriority(existing.Source) >= modelPriceSourcePriority(candidate.Source) {
+			continue
+		}
+		if hasCandidate {
+			delete(selection.Prices, modelID)
+			delete(selection.Matched, modelID)
+		}
+		preserved = append(preserved, modelID)
+	}
+	sort.Strings(preserved)
+	return selection, preserved
+}
+
+func requestedModelScope(models []string) map[string]bool {
+	if len(models) == 0 {
+		return nil
+	}
+	scope := make(map[string]bool, len(models))
+	for _, modelID := range models {
+		if normalized := strings.TrimSpace(modelID); normalized != "" {
+			scope[normalized] = true
+		}
+	}
+	return scope
+}
+
+func hasFailedSyncSource(sourceResults []SyncSourceResult) bool {
+	for _, result := range sourceResults {
+		if result.Error != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (source priceSyncSource) currentURL() string {
@@ -237,7 +405,13 @@ func syncResultSource(sources []string) string {
 }
 
 func (s *Service) syncHTTPClient(ctx context.Context) (*http.Client, bool, error) {
-	proxyURL := s.resolveCPAProxyURL(ctx)
+	proxyCtx := ctx
+	cancel := func() {}
+	if s.syncProxyTimeout > 0 {
+		proxyCtx, cancel = context.WithTimeout(ctx, s.syncProxyTimeout)
+	}
+	proxyURL := s.resolveCPAProxyURL(proxyCtx)
+	cancel()
 	if proxyURL == "" {
 		return defaultSyncHTTPClient(), false, nil
 	}
@@ -267,6 +441,348 @@ func (s *Service) resolveCPAProxyURL(ctx context.Context) string {
 
 func defaultSyncHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
+}
+
+type modelsDevPriceCache struct {
+	mu      sync.Mutex
+	url     string
+	etag    string
+	prices  map[string]store.ModelPrice
+	skipped int
+}
+
+// fetchModelsDevModelPrices reads the provider-indexed models.dev catalog.
+// models.dev prices are already expressed as USD per 1M tokens, unlike the
+// token-level values published by LiteLLM and OpenRouter.
+func fetchModelsDevModelPrices(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
+	res, err := fetchModelsDevResponse(ctx, syncURL, client, "")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotModified {
+		return nil, 0, errors.New("model price sync failed: unexpected 304 Not Modified")
+	}
+	return decodeModelsDevModelPrices(res.Body)
+}
+
+func (cache *modelsDevPriceCache) fetch(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	if cache.url != syncURL {
+		cache.url = syncURL
+		cache.etag = ""
+		cache.prices = nil
+		cache.skipped = 0
+	}
+
+	res, err := fetchModelsDevResponse(ctx, syncURL, client, cache.etag)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotModified {
+		if cache.prices == nil {
+			return nil, 0, errors.New("model price sync failed: models.dev returned 304 without cached prices")
+		}
+		if etag := strings.TrimSpace(res.Header.Get("ETag")); etag != "" {
+			cache.etag = etag
+		}
+		return cache.prices, cache.skipped, nil
+	}
+
+	prices, skipped, err := decodeModelsDevModelPrices(res.Body)
+	if err != nil {
+		return nil, skipped, err
+	}
+	cache.etag = strings.TrimSpace(res.Header.Get("ETag"))
+	cache.prices = prices
+	cache.skipped = skipped
+	return prices, skipped, nil
+}
+
+func fetchModelsDevResponse(ctx context.Context, syncURL string, client *http.Client, etag string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, syncURL, nil)
+	if err != nil {
+		return nil, errors.New("model price sync failed: " + err.Error())
+	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	if client == nil {
+		client = defaultSyncHTTPClient()
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, errors.New("model price sync failed: " + err.Error())
+	}
+	if res.StatusCode == http.StatusNotModified {
+		return res, nil
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		res.Body.Close()
+		return nil, errors.New("model price sync failed: " + res.Status)
+	}
+	return res, nil
+}
+
+func decodeModelsDevModelPrices(reader io.Reader) (map[string]store.ModelPrice, int, error) {
+	var raw map[string]struct {
+		Models map[string]json.RawMessage `json:"models"`
+	}
+	decoder := json.NewDecoder(reader)
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, 0, err
+	}
+
+	now := time.Now().UnixMilli()
+	prices := map[string]store.ModelPrice{}
+	skipped := 0
+	providerIDs := make([]string, 0, len(raw))
+	for providerID := range raw {
+		providerIDs = append(providerIDs, providerID)
+	}
+	sort.Strings(providerIDs)
+
+	for _, rawProviderID := range providerIDs {
+		provider := raw[rawProviderID]
+		providerID := strings.TrimSpace(rawProviderID)
+		modelIDs := make([]string, 0, len(provider.Models))
+		for modelID := range provider.Models {
+			modelIDs = append(modelIDs, modelID)
+		}
+		sort.Strings(modelIDs)
+		for _, rawModelID := range modelIDs {
+			modelRaw := provider.Models[rawModelID]
+			modelID := strings.TrimSpace(rawModelID)
+			if providerID == "" || modelID == "" {
+				skipped++
+				continue
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(modelRaw, &entry); err != nil {
+				skipped++
+				continue
+			}
+			cost, ok := entry["cost"].(map[string]any)
+			if !ok {
+				skipped++
+				continue
+			}
+			promptCost, hasPrompt := readFloat(cost, "input")
+			completionCost, hasCompletion := readFloat(cost, "output")
+			cacheReadCost, hasCacheRead := readFloat(cost, "cache_read")
+			cacheCreationCost, hasCacheCreation := readFloat(cost, "cache_write")
+			if !hasPrompt && !hasCompletion && !hasCacheRead && !hasCacheCreation {
+				skipped++
+				continue
+			}
+
+			sourceModelID := providerID + "/" + modelID
+			price := store.ModelPrice{
+				Prompt:                  promptCost,
+				Completion:              completionCost,
+				Cache:                   cacheReadCost,
+				CacheRead:               cacheReadCost,
+				CacheCreation:           cacheCreationCost,
+				PromptConfigured:        hasPrompt,
+				CompletionConfigured:    hasCompletion,
+				CacheReadConfigured:     hasCacheRead,
+				CacheCreationConfigured: hasCacheCreation,
+				Source:                  SyncSourceModelsDev,
+				SourceModelID:           sourceModelID,
+				RawJSON:                 string(modelRaw),
+				ContextTiers:            readModelsDevContextTiers(cost),
+				ServiceTiers:            readModelsDevServiceTiers(entry),
+				UpdatedAtMS:             now,
+				SyncedAtMS:              &now,
+			}
+			prices[sourceModelID] = price
+		}
+	}
+	if len(prices) == 0 {
+		return nil, skipped, errors.New("model price sync failed: models.dev catalog contained no usable prices")
+	}
+
+	return prices, skipped, nil
+}
+
+func readModelsDevContextTiers(cost map[string]any) []store.ModelPriceContextTier {
+	rawTiers, ok := cost["tiers"].([]any)
+	if !ok || len(rawTiers) == 0 {
+		return nil
+	}
+	tiers := make([]store.ModelPriceContextTier, 0, len(rawTiers))
+	for _, rawTier := range rawTiers {
+		entry, ok := rawTier.(map[string]any)
+		if !ok {
+			continue
+		}
+		descriptor, ok := entry["tier"].(map[string]any)
+		if !ok || !strings.EqualFold(readString(descriptor, "type"), "context") {
+			continue
+		}
+		threshold, ok := readPositiveInt64(descriptor, "size")
+		if !ok {
+			return nil
+		}
+		prompt, hasPrompt := readFloat(entry, "input")
+		completion, hasCompletion := readFloat(entry, "output")
+		cacheRead, hasCacheRead := readFloat(entry, "cache_read")
+		cacheCreation, hasCacheCreation := readFloat(entry, "cache_write")
+		if !hasPrompt && !hasCompletion && !hasCacheRead && !hasCacheCreation {
+			return nil
+		}
+		tiers = append(tiers, store.ModelPriceContextTier{
+			ThresholdTokens:         threshold,
+			Prompt:                  prompt,
+			Completion:              completion,
+			Cache:                   cacheRead,
+			CacheRead:               cacheRead,
+			CacheCreation:           cacheCreation,
+			PromptConfigured:        hasPrompt,
+			CompletionConfigured:    hasCompletion,
+			CacheConfigured:         hasCacheRead,
+			CacheReadConfigured:     hasCacheRead,
+			CacheCreationConfigured: hasCacheCreation,
+		})
+	}
+	normalized, err := model.NormalizeModelPriceContextTiers(tiers)
+	if err != nil {
+		return nil
+	}
+	return normalized
+}
+
+func readModelsDevServiceTiers(entry map[string]any) []store.ModelPriceServiceTier {
+	experimental, ok := entry["experimental"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	modes, ok := experimental["modes"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	fast, ok := modes["fast"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	cost, ok := fast["cost"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	prompt, hasPrompt := readFloat(cost, "input")
+	completion, hasCompletion := readFloat(cost, "output")
+	cacheRead, hasCacheRead := readFloat(cost, "cache_read")
+	cacheCreation, hasCacheCreation := readFloat(cost, "cache_write")
+	if !hasPrompt && !hasCompletion && !hasCacheRead && !hasCacheCreation {
+		return nil
+	}
+	tiers, err := model.NormalizeModelPriceServiceTiers([]store.ModelPriceServiceTier{{
+		Mode:                    "fast",
+		ServiceTier:             "priority",
+		Prompt:                  prompt,
+		Completion:              completion,
+		Cache:                   cacheRead,
+		CacheRead:               cacheRead,
+		CacheCreation:           cacheCreation,
+		PromptConfigured:        hasPrompt,
+		CompletionConfigured:    hasCompletion,
+		CacheConfigured:         hasCacheRead,
+		CacheReadConfigured:     hasCacheRead,
+		CacheCreationConfigured: hasCacheCreation,
+	}})
+	if err != nil {
+		return nil
+	}
+	return tiers
+}
+
+type basePriceRule struct {
+	Prompt                  float64 `json:"prompt"`
+	Completion              float64 `json:"completion"`
+	Cache                   float64 `json:"cache"`
+	CacheRead               float64 `json:"cacheRead"`
+	CacheCreation           float64 `json:"cacheCreation"`
+	PromptConfigured        bool    `json:"promptConfigured"`
+	CompletionConfigured    bool    `json:"completionConfigured"`
+	CacheReadConfigured     bool    `json:"cacheReadConfigured"`
+	CacheCreationConfigured bool    `json:"cacheCreationConfigured"`
+}
+
+func basePriceRuleOf(price store.ModelPrice) basePriceRule {
+	return basePriceRule{
+		Prompt:                  price.Prompt,
+		Completion:              price.Completion,
+		Cache:                   price.Cache,
+		CacheRead:               price.CacheRead,
+		CacheCreation:           price.CacheCreation,
+		PromptConfigured:        price.PromptConfigured,
+		CompletionConfigured:    price.CompletionConfigured,
+		CacheReadConfigured:     price.CacheReadConfigured,
+		CacheCreationConfigured: price.CacheCreationConfigured,
+	}
+}
+
+func modelPriceRuleSignature(price store.ModelPrice) string {
+	if price.Source == SyncSourceModelsDev && price.RawJSON != "" {
+		if signature, ok := modelsDevPriceRuleSignature(price.RawJSON); ok {
+			return "models.dev:" + signature
+		}
+	}
+	rule, _ := json.Marshal(basePriceRuleOf(price))
+	return "base:" + string(rule)
+}
+
+func modelsDevPriceRuleSignature(rawJSON string) (string, bool) {
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(rawJSON), &entry); err != nil {
+		return "", false
+	}
+	signature := map[string]any{}
+	if cost, ok := entry["cost"]; ok {
+		signature["cost"] = cost
+	}
+	if experimental, ok := entry["experimental"].(map[string]any); ok {
+		if modes, ok := experimental["modes"].(map[string]any); ok {
+			modeCosts := map[string]any{}
+			for modeName, rawMode := range modes {
+				mode, ok := rawMode.(map[string]any)
+				if !ok {
+					continue
+				}
+				if cost, ok := mode["cost"]; ok {
+					modeCosts[modeName] = cost
+				}
+			}
+			if len(modeCosts) > 0 {
+				signature["experimentalModeCosts"] = modeCosts
+			}
+		}
+	}
+	encoded, err := json.Marshal(signature)
+	return string(encoded), err == nil
+}
+
+func modelsDevModelID(sourceModelID string) (string, bool) {
+	_, modelID, ok := strings.Cut(strings.TrimSpace(sourceModelID), "/")
+	modelID = strings.TrimSpace(modelID)
+	return modelID, ok && modelID != ""
+}
+
+func collectModelsDevModelIDs(prices map[string]store.ModelPrice) map[string]struct{} {
+	modelIDs := map[string]struct{}{}
+	for _, price := range prices {
+		if price.Source != SyncSourceModelsDev {
+			continue
+		}
+		if modelID, ok := modelsDevModelID(price.SourceModelID); ok {
+			modelIDs[strings.ToLower(modelID)] = struct{}{}
+		}
+	}
+	return modelIDs
 }
 
 func fetchLiteLLMModelPrices(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
@@ -392,15 +908,73 @@ type priceSelectionResult struct {
 	Unmatched  []string
 }
 
+type modelPriceMatch struct {
+	Key   string
+	Price store.ModelPrice
+}
+
+type modelPriceEntry struct {
+	key            string
+	price          store.ModelPrice
+	identities     []string
+	signature      string
+	signatureReady bool
+}
+
+type modelPriceMatcher struct {
+	entries   []modelPriceEntry
+	exact     map[string][]int
+	caseFold  map[string][]int
+	tail      map[string][]int
+	canonical map[string][]int
+}
+
+func newModelPriceMatcher(prices map[string]store.ModelPrice) *modelPriceMatcher {
+	matcher := &modelPriceMatcher{
+		entries:   make([]modelPriceEntry, 0, len(prices)),
+		exact:     make(map[string][]int, len(prices)),
+		caseFold:  make(map[string][]int, len(prices)),
+		tail:      make(map[string][]int, len(prices)),
+		canonical: make(map[string][]int, len(prices)),
+	}
+	for _, key := range sortedPriceKeys(prices) {
+		price := prices[key]
+		identities := modelPriceIdentities(key, price)
+		entryIndex := len(matcher.entries)
+		matcher.entries = append(matcher.entries, modelPriceEntry{
+			key:        key,
+			price:      price,
+			identities: identities,
+		})
+		for _, identity := range identities {
+			appendModelPriceIndex(matcher.exact, identity, entryIndex)
+			appendModelPriceIndex(matcher.caseFold, strings.ToLower(identity), entryIndex)
+			appendModelPriceIndex(matcher.tail, canonicalModelTail(identity), entryIndex)
+			appendModelPriceIndex(matcher.canonical, canonicalModelID(identity), entryIndex)
+		}
+	}
+	return matcher
+}
+
+func appendModelPriceIndex(index map[string][]int, identity string, entryIndex int) {
+	if identity == "" {
+		return
+	}
+	matches := index[identity]
+	if len(matches) > 0 && matches[len(matches)-1] == entryIndex {
+		return
+	}
+	index[identity] = append(matches, entryIndex)
+}
+
 func selectModelPrices(prices map[string]store.ModelPrice, models []string) priceSelectionResult {
 	result := priceSelectionResult{
 		Prices:  map[string]store.ModelPrice{},
 		Matched: map[string]store.ModelPrice{},
 	}
+	matcher := newModelPriceMatcher(prices)
 	if len(models) == 0 {
-		result.Prices = prices
-		result.Matched = prices
-		return result
+		return matcher.selectAllUnambiguousModelPrices()
 	}
 	seen := map[string]bool{}
 	for _, modelID := range models {
@@ -409,13 +983,18 @@ func selectModelPrices(prices map[string]store.ModelPrice, models []string) pric
 			continue
 		}
 		seen[normalized] = true
-		price, _, ok := findAutomaticModelPrice(prices, normalized)
+		price, _, ok, indexedMatches := matcher.findAutomaticModelPrice(normalized)
 		if ok {
 			result.Prices[normalized] = price
 			result.Matched[normalized] = price
 			continue
 		}
-		candidates := findCandidateModelPrices(prices, normalized)
+		var candidates []SyncCandidate
+		if len(indexedMatches) > 0 {
+			candidates = matcher.candidateModelPricesForIndexes(normalized, indexedMatches)
+		} else {
+			candidates = matcher.findCandidateModelPrices(normalized)
+		}
 		if len(candidates) > 0 {
 			result.Candidates = append(result.Candidates, SyncCandidateSet{
 				Model:      normalized,
@@ -428,53 +1007,257 @@ func selectModelPrices(prices map[string]store.ModelPrice, models []string) pric
 	return result
 }
 
+func selectAllUnambiguousModelPrices(prices map[string]store.ModelPrice) priceSelectionResult {
+	return newModelPriceMatcher(prices).selectAllUnambiguousModelPrices()
+}
+
+func (matcher *modelPriceMatcher) selectAllUnambiguousModelPrices() priceSelectionResult {
+	result := priceSelectionResult{
+		Prices:  map[string]store.ModelPrice{},
+		Matched: map[string]store.ModelPrice{},
+	}
+	modelIDs := map[string]struct{}{}
+	for entryIndex := range matcher.entries {
+		entry := &matcher.entries[entryIndex]
+		if entry.price.Source == SyncSourceModelsDev {
+			if modelID, ok := modelsDevModelID(entry.price.SourceModelID); ok {
+				modelIDs[modelID] = struct{}{}
+			}
+			continue
+		}
+		modelIDs[entry.key] = struct{}{}
+	}
+	orderedModelIDs := make([]string, 0, len(modelIDs))
+	for modelID := range modelIDs {
+		orderedModelIDs = append(orderedModelIDs, modelID)
+	}
+	sort.Strings(orderedModelIDs)
+	for _, modelID := range orderedModelIDs {
+		price, ok := matcher.selectUnambiguousModelPrice(matcher.exact[modelID])
+		if !ok {
+			continue
+		}
+		result.Prices[modelID] = price
+		result.Matched[modelID] = price
+	}
+	return result
+}
+
 func findAutomaticModelPrice(prices map[string]store.ModelPrice, modelID string) (store.ModelPrice, string, bool) {
+	price, reason, ok, _ := newModelPriceMatcher(prices).findAutomaticModelPrice(modelID)
+	return price, reason, ok
+}
+
+func (matcher *modelPriceMatcher) findAutomaticModelPrice(modelID string) (store.ModelPrice, string, bool, []int) {
+	matches, reason := matcher.indexedModelPriceMatches(modelID)
+	if len(matches) == 0 {
+		return store.ModelPrice{}, "", false, nil
+	}
+	price, ok := matcher.selectUnambiguousModelPrice(matches)
+	return price, reason, ok, matches
+}
+
+func (matcher *modelPriceMatcher) indexedModelPriceMatches(modelID string) ([]int, string) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
-		return store.ModelPrice{}, "", false
+		return nil, ""
 	}
-	if price, ok := prices[modelID]; ok {
-		return price, "exact", true
+	if matches := matcher.exact[modelID]; len(matches) > 0 {
+		return matches, "exact"
 	}
-	keys := sortedPriceKeys(prices)
-	if key, ok := uniqueMatch(keys, func(key string) bool {
-		return strings.EqualFold(key, modelID)
-	}); ok {
-		return prices[key], "case-insensitive", true
+	if matches := matcher.caseFold[strings.ToLower(modelID)]; len(matches) > 0 {
+		return matches, "case-insensitive"
 	}
 	modelTail := canonicalModelTail(modelID)
 	if modelTail != "" {
-		if key, ok := uniqueMatch(keys, func(key string) bool {
-			return canonicalModelTail(key) == modelTail
-		}); ok {
-			return prices[key], "provider-prefix", true
+		if matches := matcher.tail[modelTail]; len(matches) > 0 {
+			return matches, "provider-prefix"
 		}
 	}
 	modelCanonical := canonicalModelID(modelID)
 	if modelCanonical != "" {
-		if key, ok := uniqueMatch(keys, func(key string) bool {
-			return canonicalModelID(key) == modelCanonical
-		}); ok {
-			return prices[key], "normalized", true
+		if matches := matcher.canonical[modelCanonical]; len(matches) > 0 {
+			return matches, "normalized"
 		}
 	}
-	return store.ModelPrice{}, "", false
+	return nil, ""
+}
+
+func findModelPriceMatches(prices map[string]store.ModelPrice, matchIdentity func(string) bool) []modelPriceMatch {
+	matches := []modelPriceMatch{}
+	for _, key := range sortedPriceKeys(prices) {
+		price := prices[key]
+		for _, identity := range modelPriceIdentities(key, price) {
+			if !matchIdentity(identity) {
+				continue
+			}
+			matches = append(matches, modelPriceMatch{Key: key, Price: price})
+			break
+		}
+	}
+	return matches
+}
+
+func selectUnambiguousModelPrice(matches []modelPriceMatch) (store.ModelPrice, bool) {
+	if len(matches) == 0 {
+		return store.ModelPrice{}, false
+	}
+	if len(matches) == 1 {
+		return matches[0].Price, true
+	}
+	signature := modelPriceRuleSignature(matches[0].Price)
+	selected := matches[0]
+	for _, match := range matches[1:] {
+		if modelPriceRuleSignature(match.Price) != signature {
+			return store.ModelPrice{}, false
+		}
+		if modelPriceMatchLess(match, selected) {
+			selected = match
+		}
+	}
+	return selected.Price, true
+}
+
+func modelPriceMatchLess(left modelPriceMatch, right modelPriceMatch) bool {
+	leftPriority := modelPriceSourcePriority(left.Price.Source)
+	rightPriority := modelPriceSourcePriority(right.Price.Source)
+	if leftPriority != rightPriority {
+		return leftPriority < rightPriority
+	}
+	leftID := strings.TrimSpace(left.Price.SourceModelID)
+	rightID := strings.TrimSpace(right.Price.SourceModelID)
+	if leftID != rightID {
+		return leftID < rightID
+	}
+	return left.Key < right.Key
+}
+
+func (matcher *modelPriceMatcher) selectUnambiguousModelPrice(matches []int) (store.ModelPrice, bool) {
+	if len(matches) == 0 {
+		return store.ModelPrice{}, false
+	}
+	if len(matches) == 1 {
+		return matcher.entries[matches[0]].price, true
+	}
+	signature := matcher.modelPriceRuleSignature(matches[0])
+	selected := matches[0]
+	for _, entryIndex := range matches[1:] {
+		if matcher.modelPriceRuleSignature(entryIndex) != signature {
+			return store.ModelPrice{}, false
+		}
+		if modelPriceEntryLess(&matcher.entries[entryIndex], &matcher.entries[selected]) {
+			selected = entryIndex
+		}
+	}
+	return matcher.entries[selected].price, true
+}
+
+func (matcher *modelPriceMatcher) modelPriceRuleSignature(entryIndex int) string {
+	entry := &matcher.entries[entryIndex]
+	if !entry.signatureReady {
+		entry.signature = modelPriceRuleSignature(entry.price)
+		entry.signatureReady = true
+	}
+	return entry.signature
+}
+
+func modelPriceEntryLess(left *modelPriceEntry, right *modelPriceEntry) bool {
+	leftPriority := modelPriceSourcePriority(left.price.Source)
+	rightPriority := modelPriceSourcePriority(right.price.Source)
+	if leftPriority != rightPriority {
+		return leftPriority < rightPriority
+	}
+	leftID := strings.TrimSpace(left.price.SourceModelID)
+	rightID := strings.TrimSpace(right.price.SourceModelID)
+	if leftID != rightID {
+		return leftID < rightID
+	}
+	return left.key < right.key
+}
+
+func modelPriceSourcePriority(source string) int {
+	switch source {
+	case SyncSourceModelsDev:
+		return 0
+	case SyncSourceLiteLLM:
+		return 1
+	case SyncSourceOpenRouter:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func modelPriceIdentities(key string, price store.ModelPrice) []string {
+	identities := make([]string, 0, 3)
+	add := func(identity string) {
+		identity = strings.TrimSpace(identity)
+		if identity == "" {
+			return
+		}
+		for _, existing := range identities {
+			if existing == identity {
+				return
+			}
+		}
+		identities = append(identities, identity)
+	}
+	add(key)
+	add(price.SourceModelID)
+	if price.Source == SyncSourceModelsDev {
+		if modelID, ok := modelsDevModelID(price.SourceModelID); ok {
+			add(modelID)
+		}
+	}
+	return identities
 }
 
 func findCandidateModelPrices(prices map[string]store.ModelPrice, modelID string) []SyncCandidate {
+	return newModelPriceMatcher(prices).findCandidateModelPrices(modelID)
+}
+
+func (matcher *modelPriceMatcher) findCandidateModelPrices(modelID string) []SyncCandidate {
 	candidates := make([]SyncCandidate, 0, maxSyncCandidates)
-	for _, key := range sortedPriceKeys(prices) {
-		score, reason := modelSimilarity(modelID, key)
-		if score < minCandidateScore && !(score >= minWeakCandidateScore && isWeakRecallReason(reason)) {
-			continue
-		}
-		candidates = append(candidates, SyncCandidate{
-			SourceModelID: key,
-			Score:         math.Round(score*100) / 100,
-			Reason:        reason,
-			Price:         prices[key],
-		})
+	for entryIndex := range matcher.entries {
+		candidates = appendModelPriceCandidate(candidates, modelID, &matcher.entries[entryIndex])
 	}
+	return sortAndLimitModelPriceCandidates(candidates)
+}
+
+func (matcher *modelPriceMatcher) candidateModelPricesForIndexes(modelID string, indexes []int) []SyncCandidate {
+	candidates := make([]SyncCandidate, 0, maxSyncCandidates)
+	for _, entryIndex := range indexes {
+		candidates = appendModelPriceCandidate(candidates, modelID, &matcher.entries[entryIndex])
+	}
+	return sortAndLimitModelPriceCandidates(candidates)
+}
+
+func appendModelPriceCandidate(candidates []SyncCandidate, modelID string, entry *modelPriceEntry) []SyncCandidate {
+	score := 0.0
+	reason := ""
+	for _, identity := range entry.identities {
+		candidateScore, candidateReason := modelIdentitySimilarity(modelID, identity)
+		if candidateScore > score {
+			score = candidateScore
+			reason = candidateReason
+		}
+	}
+	if score < minCandidateScore && !(score >= minWeakCandidateScore && isWeakRecallReason(reason)) {
+		return candidates
+	}
+	sourceModelID := strings.TrimSpace(entry.price.SourceModelID)
+	if sourceModelID == "" {
+		sourceModelID = entry.key
+	}
+	return append(candidates, SyncCandidate{
+		SourceModelID: sourceModelID,
+		Score:         math.Round(score*100) / 100,
+		Reason:        reason,
+		Price:         entry.price,
+	})
+}
+
+func sortAndLimitModelPriceCandidates(candidates []SyncCandidate) []SyncCandidate {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Score == candidates[j].Score {
 			return candidates[i].SourceModelID < candidates[j].SourceModelID
@@ -487,6 +1270,47 @@ func findCandidateModelPrices(prices map[string]store.ModelPrice, modelID string
 	return candidates
 }
 
+func normalizedRequestedModels(models []string) []string {
+	normalized := make([]string, 0, len(models))
+	seen := map[string]struct{}{}
+	for _, modelID := range models {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		if _, exists := seen[modelID]; exists {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		normalized = append(normalized, modelID)
+	}
+	return normalized
+}
+
+func modelPricesCoverRequested(prices map[string]store.ModelPrice, models []string) bool {
+	if len(models) == 0 {
+		return false
+	}
+	matcher := newModelPriceMatcher(prices)
+	for _, modelID := range models {
+		matches, _ := matcher.indexedModelPriceMatches(modelID)
+		if len(matches) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func modelIdentitySimilarity(left string, right string) (float64, string) {
+	if left == right {
+		return 1, "exact-model-id"
+	}
+	if strings.EqualFold(left, right) {
+		return 0.98, "case-insensitive-model-id"
+	}
+	return modelSimilarity(left, right)
+}
+
 func sortedPriceKeys(prices map[string]store.ModelPrice) []string {
 	keys := make([]string, 0, len(prices))
 	for key := range prices {
@@ -494,20 +1318,6 @@ func sortedPriceKeys(prices map[string]store.ModelPrice) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func uniqueMatch(keys []string, match func(string) bool) (string, bool) {
-	matchedKey := ""
-	for _, key := range keys {
-		if !match(key) {
-			continue
-		}
-		if matchedKey != "" {
-			return "", false
-		}
-		matchedKey = key
-	}
-	return matchedKey, matchedKey != ""
 }
 
 func modelSimilarity(left string, right string) (float64, string) {
@@ -808,6 +1618,36 @@ func readFirstFloat(entry map[string]any, keys ...string) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func readPositiveInt64(entry map[string]any, key string) (int64, bool) {
+	value, ok := entry[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+	var parsed int64
+	switch typed := value.(type) {
+	case float64:
+		if typed <= 0 || typed > math.MaxInt64 || math.Trunc(typed) != typed {
+			return 0, false
+		}
+		parsed = int64(typed)
+	case json.Number:
+		value, err := typed.Int64()
+		if err != nil || value <= 0 {
+			return 0, false
+		}
+		parsed = value
+	case string:
+		value, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		if err != nil || value <= 0 {
+			return 0, false
+		}
+		parsed = value
+	default:
+		return 0, false
+	}
+	return parsed, true
 }
 
 func readString(entry map[string]any, key string) string {

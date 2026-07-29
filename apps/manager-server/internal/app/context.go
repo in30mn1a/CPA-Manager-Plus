@@ -67,6 +67,58 @@ func FromExisting(
 	serviceID string,
 	automationRuntimeService ...AutomationRuntimeService,
 ) *Context {
+	return fromExisting(
+		cfg,
+		st,
+		collectorManager,
+		startedAt,
+		embeddedPanel,
+		nil,
+		modelPriceSyncURL,
+		openRouterModelPriceSyncURL,
+		serviceID,
+		automationRuntimeService...,
+	)
+}
+
+func FromExistingWithModelsDev(
+	cfg config.Config,
+	st *store.Store,
+	collectorManager *collector.Manager,
+	startedAt int64,
+	embeddedPanel fs.FS,
+	modelsDevModelPriceSyncURL *string,
+	modelPriceSyncURL *string,
+	openRouterModelPriceSyncURL *string,
+	serviceID string,
+	automationRuntimeService ...AutomationRuntimeService,
+) *Context {
+	return fromExisting(
+		cfg,
+		st,
+		collectorManager,
+		startedAt,
+		embeddedPanel,
+		modelsDevModelPriceSyncURL,
+		modelPriceSyncURL,
+		openRouterModelPriceSyncURL,
+		serviceID,
+		automationRuntimeService...,
+	)
+}
+
+func fromExisting(
+	cfg config.Config,
+	st *store.Store,
+	collectorManager *collector.Manager,
+	startedAt int64,
+	embeddedPanel fs.FS,
+	modelsDevModelPriceSyncURL *string,
+	modelPriceSyncURL *string,
+	openRouterModelPriceSyncURL *string,
+	serviceID string,
+	automationRuntimeService ...AutomationRuntimeService,
+) *Context {
 	var runtimeService AutomationRuntimeService
 	if len(automationRuntimeService) > 0 {
 		runtimeService = automationRuntimeService[0]
@@ -99,7 +151,7 @@ func FromExisting(
 		DashboardService:               dashboardsvc.New(st, cfg.DashboardHourlyRollupEnabled),
 		CodexInspectionService:         codexinspectionsvc.New(st, managerConfigService),
 		MonitoringService:              monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
-		ModelPriceService:              modelpricesvc.NewMultiSource(st, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
+		ModelPriceService:              modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
 		APIKeyAliasService:             apikeyaliassvc.New(st),
 		AccountActionService:           accountactionsvc.New(st, managerConfigService),
 		AccountProcessingPolicyService: accountProcessingPolicyService,

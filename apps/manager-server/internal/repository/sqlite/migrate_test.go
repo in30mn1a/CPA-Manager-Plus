@@ -116,6 +116,12 @@ func TestCodexInspectionAutoRecoverySchema(t *testing.T) {
 			t.Fatalf("ownership columns = %#v, missing %s", ownershipColumns, column)
 		}
 	}
+	leaseColumns := migrationTableColumns(t, db, "codex_inspection_leases")
+	for _, column := range []string{"id", "run_id", "owner_id", "heartbeat_at_ms", "lease_expires_at_ms"} {
+		if !leaseColumns[column] {
+			t.Fatalf("lease columns = %#v, missing %s", leaseColumns, column)
+		}
+	}
 	accountActionColumns := migrationTableColumns(t, db, "account_action_candidates")
 	for _, column := range []string{"reason_code", "auto_disable_eligible", "auto_disabled_at_ms"} {
 		if !accountActionColumns[column] {
@@ -579,6 +585,29 @@ func TestEnsureModelPriceColumnsPreservesLegacyZeroBasePrices(t *testing.T) {
 	if promptConfigured != 1 || completionConfigured != 1 || cacheReadConfigured != 0 || cacheCreationConfigured != 0 {
 		t.Fatalf("configured flags = %d/%d/%d/%d", promptConfigured, completionConfigured, cacheReadConfigured, cacheCreationConfigured)
 	}
+}
+
+func TestMigrateCreatesModelPriceServiceTierTableWithCascade(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "model-price-service-tier.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(`insert into model_prices (
+		model, prompt_per_1m, completion_per_1m, cache_per_1m, updated_at_ms
+	) values ('gpt-test', 1, 2, 0.1, 1)`); err != nil {
+		t.Fatalf("insert model price: %v", err)
+	}
+	if _, err := db.Exec(`insert into model_price_service_tiers (
+		model, mode, service_tier, prompt_per_1m, prompt_configured
+	) values ('gpt-test', 'fast', 'priority', 2.5, 1)`); err != nil {
+		t.Fatalf("insert model price service tier: %v", err)
+	}
+	if _, err := db.Exec(`delete from model_prices where model = 'gpt-test'`); err != nil {
+		t.Fatalf("delete model price: %v", err)
+	}
+	assertTableCount(t, db, "model_price_service_tiers", 0)
 }
 
 func migrationTableColumns(t *testing.T, db *sql.DB, table string) map[string]bool {
