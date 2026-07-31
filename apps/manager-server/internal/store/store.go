@@ -364,12 +364,16 @@ func (s *Store) UpsertCodexInspectionDisableOwnership(ctx context.Context, item 
 	return s.CodexInspections.UpsertDisableOwnership(ctx, item)
 }
 
-func (s *Store) DeleteCodexInspectionDisableOwnership(ctx context.Context, fileName string) error {
-	return s.CodexInspections.DeleteDisableOwnership(ctx, fileName)
+func (s *Store) UpsertCodexInspectionDisableOwnerships(ctx context.Context, items []CodexInspectionDisableOwnership) error {
+	return s.CodexInspections.UpsertDisableOwnerships(ctx, items)
 }
 
-func (s *Store) RevokeCodexInspectionDisableOwnership(ctx context.Context, fileNames []string, clearAll bool) ([]CodexInspectionDisableOwnership, error) {
-	return s.CodexInspections.RevokeDisableOwnership(ctx, fileNames, clearAll)
+func (s *Store) DeleteCodexInspectionDisableOwnership(ctx context.Context, target model.CodexInspectionDisableOwnershipTarget) error {
+	return s.CodexInspections.DeleteDisableOwnership(ctx, target)
+}
+
+func (s *Store) RevokeCodexInspectionDisableOwnership(ctx context.Context, targets []model.CodexInspectionDisableOwnershipTarget, clearAll bool) ([]CodexInspectionDisableOwnership, error) {
+	return s.CodexInspections.RevokeDisableOwnership(ctx, targets, clearAll)
 }
 
 func (s *Store) RestoreCodexInspectionDisableOwnership(ctx context.Context, items []CodexInspectionDisableOwnership) error {

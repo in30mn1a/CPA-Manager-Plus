@@ -96,11 +96,19 @@ func runServer() {
 	}
 	automationSettingsService := serverApp.AppContext().AccountProcessingPolicyService
 	runtimeSettings := automationSettingsService.RuntimeSettings(ctx)
-	rateLimitAutoDisableWorker := worker.NewRateLimitAutoDisableWorker(db, collector.RuntimeConfig{
-		CPAUpstreamURL: cfg.CPAUpstreamURL,
-		ManagementKey:  cfg.ManagementKey,
-	})
-	accountActionWorker := worker.NewAccountActionCandidateWorker(db, runtimeSettings.AccountActionsAutoDisable)
+	rateLimitAutoDisableWorker := worker.NewRateLimitAutoDisableWorkerWithMutationCoordinator(
+		db,
+		serverApp.AppContext().AuthFileMutationCoordinator,
+		collector.RuntimeConfig{
+			CPAUpstreamURL: cfg.CPAUpstreamURL,
+			ManagementKey:  cfg.ManagementKey,
+		},
+	)
+	accountActionWorker := worker.NewAccountActionCandidateWorkerWithMutationCoordinator(
+		db,
+		serverApp.AppContext().AuthFileMutationCoordinator,
+		runtimeSettings.AccountActionsAutoDisable,
+	)
 	accountHistoryRollupWorker := worker.NewAccountHistoryRollupWorker(db)
 	accountHistoryRollupWorker.Start(ctx)
 	usagePricingRollupWorker := worker.NewUsagePricingRollupWorker(db)

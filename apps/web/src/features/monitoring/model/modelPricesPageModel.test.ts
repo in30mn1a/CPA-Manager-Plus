@@ -8,6 +8,8 @@ import {
   filterModelPriceRows,
   formatContextThreshold,
   formatServiceTierRule,
+  getModelPriceCandidateIdentity,
+  groupModelPriceCandidatesBySource,
   resolveContextTierDisplayPrice,
   resolveServiceTierDisplayPrice,
 } from './modelPricesPageModel';
@@ -113,6 +115,31 @@ describe('modelPricesPageModel', () => {
       source: 'openrouter',
       sourceModelId: 'openai/gpt-5.5',
     });
+  });
+
+  it('keeps identical source model IDs distinct and groups candidates by source', () => {
+    const candidates = [
+      {
+        sourceModelId: 'openai/gpt-5.5',
+        score: 0.94,
+        reason: 'same-model-with-provider-prefix',
+        price: { prompt: 1, completion: 2, cache: 0.5, source: 'models.dev' },
+      },
+      {
+        sourceModelId: 'openai/gpt-5.5',
+        score: 0.94,
+        reason: 'same-model-with-provider-prefix',
+        price: { prompt: 1.1, completion: 2.1, cache: 0.6, source: 'openrouter' },
+      },
+    ];
+
+    expect(getModelPriceCandidateIdentity(candidates[0])).not.toBe(
+      getModelPriceCandidateIdentity(candidates[1])
+    );
+    expect(groupModelPriceCandidatesBySource(candidates)).toEqual([
+      { source: 'models.dev', candidates: [candidates[0]] },
+      { source: 'openrouter', candidates: [candidates[1]] },
+    ]);
   });
 
   it('marks manually entered prices with a manual source', () => {

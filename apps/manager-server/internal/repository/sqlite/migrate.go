@@ -475,6 +475,7 @@ func Migrate(db *sql.DB) error {
 			account_key text not null,
 			file_name text not null,
 			display_account text not null,
+			account_snapshot text,
 			auth_index text,
 			account_id text,
 			provider text,
@@ -511,12 +512,14 @@ func Migrate(db *sql.DB) error {
 		)`,
 		`create index if not exists idx_codex_inspection_logs_run on codex_inspection_logs(run_id, created_at_ms)`,
 		`create table if not exists codex_inspection_disable_ownership (
-			file_name text primary key,
-			provider text not null default 'codex',
-			auth_index text,
-			account_id text,
+			file_name text not null,
+			provider text not null default '',
+			auth_index text not null default '',
+			account_id text not null default '',
+			account_snapshot text not null default '',
 			disabled_at_ms integer not null,
-			updated_at_ms integer not null
+			updated_at_ms integer not null,
+			primary key (file_name, provider, auth_index, account_id, account_snapshot)
 		)`,
 		`create table if not exists quota_cooldowns (
 			id integer primary key autoincrement,
@@ -539,7 +542,6 @@ func Migrate(db *sql.DB) error {
 			updated_at_ms integer not null
 		)`,
 		`create index if not exists idx_quota_cooldowns_due on quota_cooldowns(status, recover_at_ms)`,
-		`create unique index if not exists idx_quota_cooldowns_active_owner on quota_cooldowns(auth_file_name, owner) where status = 'active'`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -565,6 +567,9 @@ func Migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureQuotaCooldownColumns(db); err != nil {
+		return err
+	}
+	if err := ensureQuotaCooldownIdentityIndex(db); err != nil {
 		return err
 	}
 	if err := ensureUsageRollupLongContextColumns(db); err != nil {
@@ -645,28 +650,103 @@ func ensureCodexInspectionOwnershipColumns(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	existing := map[string]struct{}{}
+	type columnInfo struct {
+		notNull int
+		pk      int
+	}
+	existing := map[string]columnInfo{}
 	for rows.Next() {
 		var cid int
 		var name, columnType string
 		var notNull, pk int
 		var defaultValue any
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
 			return err
 		}
-		existing[name] = struct{}{}
+		existing[name] = columnInfo{notNull: notNull, pk: pk}
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return err
 	}
-	if _, ok := existing["provider"]; ok {
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	primaryKeyReady := existing["file_name"].pk == 1 &&
+		existing["provider"].pk == 2 &&
+		existing["auth_index"].pk == 3 &&
+		existing["account_id"].pk == 4 &&
+		existing["account_snapshot"].pk == 5 &&
+		existing["file_name"].notNull == 1 &&
+		existing["provider"].notNull == 1 &&
+		existing["auth_index"].notNull == 1 &&
+		existing["account_id"].notNull == 1 &&
+		existing["account_snapshot"].notNull == 1
+	if primaryKeyReady {
 		return nil
 	}
-	if _, err := db.Exec(`alter table codex_inspection_disable_ownership add column provider text not null default 'codex'`); err != nil {
+
+	providerExpression := `'codex'`
+	if _, ok := existing["provider"]; ok {
+		providerExpression = `case coalesce(lower(replace(trim(provider), '_', '-')), '')
+			when 'x-ai' then 'xai'
+			when 'grok' then 'xai'
+			else lower(replace(trim(provider), '_', '-'))
+		end`
+	}
+	authIndexExpression := `''`
+	if _, ok := existing["auth_index"]; ok {
+		authIndexExpression = `coalesce(trim(auth_index), '')`
+	}
+	accountIDExpression := `''`
+	if _, ok := existing["account_id"]; ok {
+		accountIDExpression = `coalesce(trim(account_id), '')`
+	}
+	accountSnapshotSourceExpression := `''`
+	if _, ok := existing["account_snapshot"]; ok {
+		accountSnapshotSourceExpression = `coalesce(trim(account_snapshot), '')`
+	}
+	accountSnapshotExpression := fmt.Sprintf(
+		`case when %s <> '' then '' else %s end`,
+		accountIDExpression,
+		accountSnapshotSourceExpression,
+	)
+
+	tx, err := db.Begin()
+	if err != nil {
 		return err
 	}
-	return nil
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`drop table if exists codex_inspection_disable_ownership_v2`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`create table codex_inspection_disable_ownership_v2 (
+		file_name text not null,
+		provider text not null default '',
+		auth_index text not null default '',
+		account_id text not null default '',
+		account_snapshot text not null default '',
+		disabled_at_ms integer not null,
+		updated_at_ms integer not null,
+		primary key (file_name, provider, auth_index, account_id, account_snapshot)
+	)`); err != nil {
+		return err
+	}
+	copyStatement := fmt.Sprintf(`insert or replace into codex_inspection_disable_ownership_v2 (
+		file_name, provider, auth_index, account_id, account_snapshot, disabled_at_ms, updated_at_ms
+	) select trim(file_name), %s, %s, %s, %s, disabled_at_ms, updated_at_ms
+	from codex_inspection_disable_ownership`, providerExpression, authIndexExpression, accountIDExpression, accountSnapshotExpression)
+	if _, err := tx.Exec(copyStatement); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`drop table codex_inspection_disable_ownership`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`alter table codex_inspection_disable_ownership_v2 rename to codex_inspection_disable_ownership`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureQuotaCooldownColumns(db *sql.DB) error {
@@ -706,6 +786,39 @@ func ensureQuotaCooldownColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureQuotaCooldownIdentityIndex(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`drop index if exists idx_quota_cooldowns_active_owner`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`create unique index if not exists idx_quota_cooldowns_active_identity
+		on quota_cooldowns (
+			auth_file_name,
+			owner,
+			coalesce(trim(auth_index), ''),
+			case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else case coalesce(lower(replace(trim(provider), '_', '-')), '')
+					when 'x-ai' then 'xai'
+					when 'grok' then 'xai'
+					else coalesce(lower(replace(trim(provider), '_', '-')), '')
+				end
+			end,
+			case
+				when coalesce(trim(auth_index), '') <> '' then ''
+				else coalesce(trim(account_snapshot), '')
+			end
+		)
+		where status = 'active'`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ensureUsageRollupLongContextColumns(db *sql.DB) error {
@@ -821,7 +934,23 @@ func ensureAccountActionCandidateColumns(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(`create unique index idx_account_action_candidates_pending_identity_action
-		on account_action_candidates(auth_file_name, action_type, coalesce(auth_index, ''), coalesce(account_id_snapshot, ''), coalesce(reason_code, '')) where status = 'pending'`); err != nil {
+		on account_action_candidates(
+			auth_file_name,
+			action_type,
+			coalesce(trim(reason_code), ''),
+			coalesce(trim(auth_index), ''),
+			case when coalesce(trim(auth_index), '') <> '' then '' else coalesce(trim(account_id_snapshot), '') end,
+			case when coalesce(trim(auth_index), '') <> '' then ''
+				else case coalesce(lower(replace(trim(provider), '_', '-')), '')
+					when 'x-ai' then 'xai'
+					when 'grok' then 'xai'
+					else coalesce(lower(replace(trim(provider), '_', '-')), '')
+				end
+			end,
+			case when coalesce(trim(auth_index), '') <> '' or coalesce(trim(account_id_snapshot), '') <> '' then ''
+				else coalesce(trim(account_snapshot), '')
+			end
+		) where status = 'pending'`); err != nil {
 		return err
 	}
 	_, err = db.Exec(`drop index if exists idx_account_action_candidates_pending_file_action`)
@@ -904,6 +1033,7 @@ func ensureCodexInspectionResultColumns(db *sql.DB) error {
 		{name: "action_status", definition: "text"},
 		{name: "executed_action", definition: "text"},
 		{name: "action_error", definition: "text"},
+		{name: "account_snapshot", definition: "text"},
 		{name: "plan_type", definition: "text"},
 		{name: "quota_windows_json", definition: "text"},
 		{name: "error_kind", definition: "text"},

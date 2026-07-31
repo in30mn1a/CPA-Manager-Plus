@@ -746,20 +746,25 @@ func TestModelPricesSyncFromLiteLLMFormat(t *testing.T) {
 	}
 }
 
-func TestModelPricesSyncPrefersModelsDevProviderScopedPrices(t *testing.T) {
+func TestModelPricesSyncUsesModelsDevOfficialAndOrderedFallback(t *testing.T) {
 	modelsDevSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"openai": {"models": {
-				"gpt-test": {"cost":{"input":9,"output":10,"cache_read":1}},
-				"ambiguous": {"cost":{"input":3,"output":4}}
-			}},
-			"azure": {"models": {
-				"ambiguous": {"cost":{"input":5,"output":6}}
-			}},
-			"crossmodel": {"models": {
-				"openai/gpt-test": {"cost":{"input":11,"output":12}}
-			}}
+			"models": {
+				"openai/gpt-test": {"id":"openai/gpt-test","name":"GPT Test"}
+			},
+			"providers": {
+				"openai": {"models": {
+					"gpt-test": {"cost":{"input":9,"output":10,"cache_read":1}},
+					"ambiguous": {"cost":{"input":3,"output":4}}
+				}},
+				"azure": {"models": {
+					"ambiguous": {"cost":{"input":5,"output":6}}
+				}},
+				"crossmodel": {"models": {
+					"openai/gpt-test": {"cost":{"input":11,"output":12}}
+				}}
+			}
 		}`))
 	}))
 	t.Cleanup(modelsDevSource.Close)
@@ -809,21 +814,8 @@ func TestModelPricesSyncPrefersModelsDevProviderScopedPrices(t *testing.T) {
 	if len(response.Sources) != 2 || response.Sources[0] != "models.dev" || response.Sources[1] != "litellm" {
 		t.Fatalf("source order = %#v", response.Sources)
 	}
-	if response.Imported != 4 || len(response.Candidates) != 2 {
+	if response.Imported != 6 || len(response.Candidates) != 0 {
 		t.Fatalf("sync selection = %#v", response)
-	}
-	candidateSources := map[string]map[string]bool{}
-	for _, set := range response.Candidates {
-		candidateSources[set.Model] = map[string]bool{}
-		for _, candidate := range set.Candidates {
-			candidateSources[set.Model][candidate.SourceModelID] = true
-		}
-	}
-	if !candidateSources["ambiguous"]["openai/ambiguous"] ||
-		!candidateSources["ambiguous"]["azure/ambiguous"] ||
-		!candidateSources["openai/gpt-test"]["openai/gpt-test"] ||
-		!candidateSources["openai/gpt-test"]["crossmodel/openai/gpt-test"] {
-		t.Fatalf("candidate sources = %#v", candidateSources)
 	}
 	price, ok := response.Prices["gpt-test"]
 	if !ok || !closeFloat(price.Prompt, 9) || !closeFloat(price.Completion, 10) || price.Source != "models.dev" || price.SourceModelID != "openai/gpt-test" {
@@ -837,8 +829,13 @@ func TestModelPricesSyncPrefersModelsDevProviderScopedPrices(t *testing.T) {
 	if !ok || !closeFloat(crossmodel.Prompt, 11) || crossmodel.SourceModelID != "crossmodel/openai/gpt-test" {
 		t.Fatalf("nested provider-scoped price = %#v", crossmodel)
 	}
-	if _, ok := response.Prices["openai/gpt-test"]; ok {
-		t.Fatalf("colliding model was imported without confirmation: %#v", response.Prices["openai/gpt-test"])
+	officialScoped, ok := response.Prices["openai/gpt-test"]
+	if !ok || !closeFloat(officialScoped.Prompt, 9) || officialScoped.Source != "models.dev" || officialScoped.SourceModelID != "openai/gpt-test" {
+		t.Fatalf("official scoped price = %#v", officialScoped)
+	}
+	ambiguous, ok := response.Prices["ambiguous"]
+	if !ok || !closeFloat(ambiguous.Prompt, 7) || ambiguous.Source != "litellm" || ambiguous.SourceModelID != "ambiguous" {
+		t.Fatalf("ordered ambiguity fallback = %#v", ambiguous)
 	}
 	fallback, ok := response.Prices["fallback-only"]
 	if !ok || !closeFloat(fallback.Prompt, 1) || fallback.Source != "litellm" || fallback.SourceModelID != "fallback-only" {
@@ -858,7 +855,10 @@ func TestModelPricesSyncCachesModelsDevAndSkipsCoveredFallbacks(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("ETag", etag)
-			_, _ = w.Write([]byte(`{"openai":{"models":{"gpt-test":{"cost":{"input":9,"output":10}}}}}`))
+			_, _ = w.Write([]byte(`{
+				"models":{"openai/gpt-test":{"id":"openai/gpt-test"}},
+				"providers":{"openai":{"models":{"gpt-test":{"cost":{"input":9,"output":10}}}}}
+			}`))
 			return
 		}
 		if received := r.Header.Get("If-None-Match"); received != etag {

@@ -33,6 +33,11 @@ export type ModelPriceSummary = {
   candidates: number;
 };
 
+export type ModelPriceCandidateGroup = {
+  source: string;
+  candidates: ModelPriceSyncCandidate[];
+};
+
 export const createEmptyPriceDraft = (): PriceDraft => ({
   model: '',
   prompt: '',
@@ -95,6 +100,31 @@ export const applyCandidatePrice = (
     sourceModelId: candidate.sourceModelId,
   },
 });
+
+export const getModelPriceCandidateSource = (candidate: ModelPriceSyncCandidate) =>
+  candidate.price.source?.trim() || 'sync';
+
+export const getModelPriceCandidateIdentity = (candidate: ModelPriceSyncCandidate) =>
+  JSON.stringify([getModelPriceCandidateSource(candidate), candidate.sourceModelId]);
+
+export const groupModelPriceCandidatesBySource = (
+  candidates: ModelPriceSyncCandidate[]
+): ModelPriceCandidateGroup[] => {
+  const groups = new Map<string, ModelPriceSyncCandidate[]>();
+  candidates.forEach((candidate) => {
+    const source = getModelPriceCandidateSource(candidate);
+    const group = groups.get(source);
+    if (group) {
+      group.push(candidate);
+      return;
+    }
+    groups.set(source, [candidate]);
+  });
+  return Array.from(groups, ([source, sourceCandidates]) => ({
+    source,
+    candidates: sourceCandidates,
+  }));
+};
 
 export const buildSyncPriceModelsFromSummary = (
   summary: ModelPriceUsageSummaryResponse | null,

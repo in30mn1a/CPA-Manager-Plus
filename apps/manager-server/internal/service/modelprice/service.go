@@ -92,12 +92,116 @@ type Service struct {
 	pricesChangedNotifier func()
 }
 
-type fetchModelPricesFunc func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error)
+type modelPriceMatchMetadata struct {
+	modelsDevCanonicalByIdentity    map[string]string
+	modelsDevOfficialSourceModelIDs map[string]struct{}
+}
+
+type fetchedModelPriceSource struct {
+	Prices   map[string]store.ModelPrice
+	Metadata modelPriceMatchMetadata
+}
+
+type modelPriceSourceEntry struct {
+	Key   string
+	Price store.ModelPrice
+}
+
+type modelPriceCollection struct {
+	Entries  []modelPriceSourceEntry
+	Metadata modelPriceMatchMetadata
+}
+
+type fetchModelPricesFunc func(context.Context, string, *http.Client) (fetchedModelPriceSource, int, error)
+type fetchModelPriceMapFunc func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error)
 
 type priceSyncSource struct {
 	Source string
 	URL    *string
 	Fetch  fetchModelPricesFunc
+}
+
+func wrapModelPriceMapFetcher(fetch fetchModelPriceMapFunc) fetchModelPricesFunc {
+	return func(ctx context.Context, syncURL string, client *http.Client) (fetchedModelPriceSource, int, error) {
+		prices, skipped, err := fetch(ctx, syncURL, client)
+		return fetchedModelPriceSource{Prices: prices}, skipped, err
+	}
+}
+
+func normalizeModelPriceIdentity(identity string) string {
+	return strings.ToLower(strings.TrimSpace(identity))
+}
+
+func (metadata *modelPriceMatchMetadata) merge(other modelPriceMatchMetadata) {
+	if len(other.modelsDevCanonicalByIdentity) > 0 {
+		if metadata.modelsDevCanonicalByIdentity == nil {
+			metadata.modelsDevCanonicalByIdentity = make(map[string]string, len(other.modelsDevCanonicalByIdentity))
+		}
+		for identity, canonicalID := range other.modelsDevCanonicalByIdentity {
+			if existing, ok := metadata.modelsDevCanonicalByIdentity[identity]; ok && !strings.EqualFold(existing, canonicalID) {
+				delete(metadata.modelsDevCanonicalByIdentity, identity)
+				continue
+			}
+			metadata.modelsDevCanonicalByIdentity[identity] = canonicalID
+		}
+	}
+	if len(other.modelsDevOfficialSourceModelIDs) > 0 {
+		if metadata.modelsDevOfficialSourceModelIDs == nil {
+			metadata.modelsDevOfficialSourceModelIDs = make(map[string]struct{}, len(other.modelsDevOfficialSourceModelIDs))
+		}
+		for sourceModelID := range other.modelsDevOfficialSourceModelIDs {
+			metadata.modelsDevOfficialSourceModelIDs[sourceModelID] = struct{}{}
+		}
+	}
+}
+
+func newModelsDevMatchMetadata(models map[string]json.RawMessage) modelPriceMatchMetadata {
+	if len(models) == 0 {
+		return modelPriceMatchMetadata{}
+	}
+	metadata := modelPriceMatchMetadata{
+		modelsDevCanonicalByIdentity: make(map[string]string, len(models)*2),
+	}
+	tailMatches := make(map[string]string, len(models))
+	for rawModelID := range models {
+		modelID := strings.TrimSpace(rawModelID)
+		if modelID == "" {
+			continue
+		}
+		normalizedModelID := normalizeModelPriceIdentity(modelID)
+		metadata.modelsDevCanonicalByIdentity[normalizedModelID] = modelID
+		_, tail, ok := strings.Cut(modelID, "/")
+		tail = strings.TrimSpace(tail)
+		if !ok || tail == "" {
+			continue
+		}
+		normalizedTail := normalizeModelPriceIdentity(tail)
+		if existing, exists := tailMatches[normalizedTail]; exists && !strings.EqualFold(existing, modelID) {
+			tailMatches[normalizedTail] = ""
+			continue
+		}
+		tailMatches[normalizedTail] = modelID
+	}
+	for tail, modelID := range tailMatches {
+		if modelID != "" {
+			metadata.modelsDevCanonicalByIdentity[tail] = modelID
+		}
+	}
+	return metadata
+}
+
+func (metadata modelPriceMatchMetadata) modelsDevCanonicalModelID(modelID string) (string, bool) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" || len(metadata.modelsDevCanonicalByIdentity) == 0 {
+		return "", false
+	}
+	canonicalID, ok := metadata.modelsDevCanonicalByIdentity[normalizeModelPriceIdentity(modelID)]
+	return canonicalID, ok
+}
+
+func (metadata modelPriceMatchMetadata) isModelsDevOfficialSourceModelID(sourceModelID string) bool {
+	_, ok := metadata.modelsDevOfficialSourceModelIDs[normalizeModelPriceIdentity(sourceModelID)]
+	return ok
 }
 
 func New(store *store.Store, syncURL *string, setupResolver ...SetupResolver) *Service {
@@ -138,19 +242,19 @@ func newMultiSource(
 		sources = append(sources, priceSyncSource{
 			Source: SyncSourceModelsDev,
 			URL:    modelsDevSyncURL,
-			Fetch:  modelsDevCache.fetch,
+			Fetch:  modelsDevCache.fetchSource,
 		})
 	}
 	sources = append(sources, priceSyncSource{
 		Source: SyncSourceLiteLLM,
 		URL:    liteLLMSyncURL,
-		Fetch:  fetchLiteLLMModelPrices,
+		Fetch:  wrapModelPriceMapFetcher(fetchLiteLLMModelPrices),
 	})
 	if openRouterSyncURL != nil {
 		sources = append(sources, priceSyncSource{
 			Source: SyncSourceOpenRouter,
 			URL:    openRouterSyncURL,
-			Fetch:  fetchOpenRouterModelPrices,
+			Fetch:  wrapModelPriceMapFetcher(fetchOpenRouterModelPrices),
 		})
 	}
 	return &Service{
@@ -205,7 +309,7 @@ func (s *Service) Sync(ctx context.Context, req SyncRequest) (SyncResult, error)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	selection := selectModelPrices(remotePrices, req.Models)
+	selection := selectModelPriceCollection(remotePrices, req.Models)
 	preserved := []string(nil)
 	if hasFailedSyncSource(sourceResults) {
 		existingPrices, err := s.store.LoadModelPrices(ctx)
@@ -244,18 +348,15 @@ func (s *Service) SyncFromLiteLLM(ctx context.Context, req SyncRequest) (SyncRes
 	return s.Sync(ctx, req)
 }
 
-func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, models []string) (map[string]store.ModelPrice, int, []string, []SyncSourceResult, error) {
-	remotePrices := map[string]store.ModelPrice{}
-	selectedPriorities := map[string]int{}
-	selectedNormalizedPriorities := map[string]int{}
-	modelsDevModelIDs := map[string]struct{}{}
+func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, models []string) (modelPriceCollection, int, []string, []SyncSourceResult, error) {
+	remotePrices := modelPriceCollection{}
 	requestedModels := normalizedRequestedModels(models)
 	sources := make([]string, 0, len(s.syncSources))
 	sourceResults := make([]SyncSourceResult, 0, len(s.syncSources))
 	failures := []string{}
 	totalSkipped := 0
 
-	for priority, source := range s.syncSources {
+	for _, source := range s.syncSources {
 		syncURL := source.currentURL()
 		result := SyncSourceResult{Source: source.Source}
 		if syncURL == "" {
@@ -269,7 +370,7 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, 
 		if s.syncSourceTimeout > 0 {
 			sourceCtx, cancel = context.WithTimeout(ctx, s.syncSourceTimeout)
 		}
-		prices, skipped, err := source.Fetch(sourceCtx, syncURL, client)
+		fetched, skipped, err := source.Fetch(sourceCtx, syncURL, client)
 		cancel()
 		result.Skipped = skipped
 		if err != nil {
@@ -278,38 +379,26 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, 
 			failures = append(failures, source.Source+": "+err.Error())
 			continue
 		}
-		result.Models = len(prices)
+		result.Models = len(fetched.Prices)
 		sourceResults = append(sourceResults, result)
 		sources = append(sources, source.Source)
 		totalSkipped += skipped
-		if source.Source == SyncSourceModelsDev {
-			modelsDevModelIDs = collectModelsDevModelIDs(prices)
-		}
+		remotePrices.Metadata.merge(fetched.Metadata)
 
-		for modelID, price := range prices {
-			normalizedModelID := strings.ToLower(strings.TrimSpace(modelID))
-			if source.Source != SyncSourceModelsDev {
-				if _, blocked := modelsDevModelIDs[normalizedModelID]; blocked {
-					continue
-				}
-				if selectedPriority, exists := selectedNormalizedPriorities[normalizedModelID]; exists && selectedPriority < priority {
-					continue
-				}
-			}
+		for _, modelID := range sortedPriceKeys(fetched.Prices) {
+			price := fetched.Prices[modelID]
 			if price.Source == "" {
 				price.Source = source.Source
 			}
 			if price.SourceModelID == "" {
 				price.SourceModelID = modelID
 			}
-			if _, exists := remotePrices[modelID]; exists && selectedPriorities[modelID] <= priority {
-				continue
-			}
-			remotePrices[modelID] = price
-			selectedPriorities[modelID] = priority
-			selectedNormalizedPriorities[normalizedModelID] = priority
+			remotePrices.Entries = append(remotePrices.Entries, modelPriceSourceEntry{
+				Key:   modelID,
+				Price: price,
+			})
 		}
-		if len(requestedModels) > 0 && modelPricesCoverRequested(remotePrices, requestedModels) {
+		if len(requestedModels) > 0 && modelPriceCollectionCoversRequested(remotePrices, requestedModels) {
 			break
 		}
 	}
@@ -318,7 +407,7 @@ func (s *Service) fetchAllModelPrices(ctx context.Context, client *http.Client, 
 		if len(failures) == 0 {
 			failures = append(failures, "no price sync sources configured")
 		}
-		return nil, 0, nil, sourceResults, errors.New("model price sync failed; existing prices were not changed: " + strings.Join(failures, "; "))
+		return modelPriceCollection{}, 0, nil, sourceResults, errors.New("model price sync failed; existing prices were not changed: " + strings.Join(failures, "; "))
 	}
 	return remotePrices, totalSkipped, sources, sourceResults, nil
 }
@@ -447,7 +536,7 @@ type modelsDevPriceCache struct {
 	mu      sync.Mutex
 	url     string
 	etag    string
-	prices  map[string]store.ModelPrice
+	fetched fetchedModelPriceSource
 	skipped int
 }
 
@@ -455,51 +544,61 @@ type modelsDevPriceCache struct {
 // models.dev prices are already expressed as USD per 1M tokens, unlike the
 // token-level values published by LiteLLM and OpenRouter.
 func fetchModelsDevModelPrices(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
+	fetched, skipped, err := fetchModelsDevPriceSource(ctx, syncURL, client)
+	return fetched.Prices, skipped, err
+}
+
+func fetchModelsDevPriceSource(ctx context.Context, syncURL string, client *http.Client) (fetchedModelPriceSource, int, error) {
 	res, err := fetchModelsDevResponse(ctx, syncURL, client, "")
 	if err != nil {
-		return nil, 0, err
+		return fetchedModelPriceSource{}, 0, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotModified {
-		return nil, 0, errors.New("model price sync failed: unexpected 304 Not Modified")
+		return fetchedModelPriceSource{}, 0, errors.New("model price sync failed: unexpected 304 Not Modified")
 	}
-	return decodeModelsDevModelPrices(res.Body)
+	return decodeModelsDevPriceSource(res.Body)
 }
 
 func (cache *modelsDevPriceCache) fetch(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
+	fetched, skipped, err := cache.fetchSource(ctx, syncURL, client)
+	return fetched.Prices, skipped, err
+}
+
+func (cache *modelsDevPriceCache) fetchSource(ctx context.Context, syncURL string, client *http.Client) (fetchedModelPriceSource, int, error) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
 	if cache.url != syncURL {
 		cache.url = syncURL
 		cache.etag = ""
-		cache.prices = nil
+		cache.fetched = fetchedModelPriceSource{}
 		cache.skipped = 0
 	}
 
 	res, err := fetchModelsDevResponse(ctx, syncURL, client, cache.etag)
 	if err != nil {
-		return nil, 0, err
+		return fetchedModelPriceSource{}, 0, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotModified {
-		if cache.prices == nil {
-			return nil, 0, errors.New("model price sync failed: models.dev returned 304 without cached prices")
+		if cache.fetched.Prices == nil {
+			return fetchedModelPriceSource{}, 0, errors.New("model price sync failed: models.dev returned 304 without cached prices")
 		}
 		if etag := strings.TrimSpace(res.Header.Get("ETag")); etag != "" {
 			cache.etag = etag
 		}
-		return cache.prices, cache.skipped, nil
+		return cache.fetched, cache.skipped, nil
 	}
 
-	prices, skipped, err := decodeModelsDevModelPrices(res.Body)
+	fetched, skipped, err := decodeModelsDevPriceSource(res.Body)
 	if err != nil {
-		return nil, skipped, err
+		return fetchedModelPriceSource{}, skipped, err
 	}
 	cache.etag = strings.TrimSpace(res.Header.Get("ETag"))
-	cache.prices = prices
+	cache.fetched = fetched
 	cache.skipped = skipped
-	return prices, skipped, nil
+	return fetched, skipped, nil
 }
 
 func fetchModelsDevResponse(ctx context.Context, syncURL string, client *http.Client, etag string) (*http.Response, error) {
@@ -527,18 +626,55 @@ func fetchModelsDevResponse(ctx context.Context, syncURL string, client *http.Cl
 	return res, nil
 }
 
+type modelsDevRawProvider struct {
+	Models map[string]json.RawMessage `json:"models"`
+}
+
 func decodeModelsDevModelPrices(reader io.Reader) (map[string]store.ModelPrice, int, error) {
-	var raw map[string]struct {
-		Models map[string]json.RawMessage `json:"models"`
-	}
+	fetched, skipped, err := decodeModelsDevPriceSource(reader)
+	return fetched.Prices, skipped, err
+}
+
+func decodeModelsDevPriceSource(reader io.Reader) (fetchedModelPriceSource, int, error) {
+	var root map[string]json.RawMessage
 	decoder := json.NewDecoder(reader)
 	decoder.UseNumber()
-	if err := decoder.Decode(&raw); err != nil {
-		return nil, 0, err
+	if err := decoder.Decode(&root); err != nil {
+		return fetchedModelPriceSource{}, 0, err
+	}
+
+	providerMessages := root
+	canonicalModels := map[string]json.RawMessage(nil)
+	if rawProviders, hasProviders := root["providers"]; hasProviders {
+		rawModels, hasModels := root["models"]
+		if !hasModels {
+			return fetchedModelPriceSource{}, 0, errors.New("model price sync failed: models.dev catalog contained no canonical models")
+		}
+		var catalogProviders map[string]json.RawMessage
+		if err := json.Unmarshal(rawProviders, &catalogProviders); err != nil {
+			return fetchedModelPriceSource{}, 0, err
+		}
+		if err := json.Unmarshal(rawModels, &canonicalModels); err != nil {
+			return fetchedModelPriceSource{}, 0, err
+		}
+		if len(canonicalModels) == 0 {
+			return fetchedModelPriceSource{}, 0, errors.New("model price sync failed: models.dev catalog contained no canonical models")
+		}
+		providerMessages = catalogProviders
+	}
+
+	raw := make(map[string]modelsDevRawProvider, len(providerMessages))
+	for providerID, message := range providerMessages {
+		var provider modelsDevRawProvider
+		if err := json.Unmarshal(message, &provider); err != nil {
+			return fetchedModelPriceSource{}, 0, err
+		}
+		raw[providerID] = provider
 	}
 
 	now := time.Now().UnixMilli()
 	prices := map[string]store.ModelPrice{}
+	metadata := newModelsDevMatchMetadata(canonicalModels)
 	skipped := 0
 	providerIDs := make([]string, 0, len(raw))
 	for providerID := range raw {
@@ -600,13 +736,19 @@ func decodeModelsDevModelPrices(reader io.Reader) (map[string]store.ModelPrice, 
 				SyncedAtMS:              &now,
 			}
 			prices[sourceModelID] = price
+			if canonicalID, ok := metadata.modelsDevCanonicalByIdentity[normalizeModelPriceIdentity(sourceModelID)]; ok && strings.EqualFold(canonicalID, sourceModelID) {
+				if metadata.modelsDevOfficialSourceModelIDs == nil {
+					metadata.modelsDevOfficialSourceModelIDs = map[string]struct{}{}
+				}
+				metadata.modelsDevOfficialSourceModelIDs[normalizeModelPriceIdentity(sourceModelID)] = struct{}{}
+			}
 		}
 	}
 	if len(prices) == 0 {
-		return nil, skipped, errors.New("model price sync failed: models.dev catalog contained no usable prices")
+		return fetchedModelPriceSource{}, skipped, errors.New("model price sync failed: models.dev catalog contained no usable prices")
 	}
 
-	return prices, skipped, nil
+	return fetchedModelPriceSource{Prices: prices, Metadata: metadata}, skipped, nil
 }
 
 func readModelsDevContextTiers(cost map[string]any) []store.ModelPriceContextTier {
@@ -700,89 +842,10 @@ func readModelsDevServiceTiers(entry map[string]any) []store.ModelPriceServiceTi
 	return tiers
 }
 
-type basePriceRule struct {
-	Prompt                  float64 `json:"prompt"`
-	Completion              float64 `json:"completion"`
-	Cache                   float64 `json:"cache"`
-	CacheRead               float64 `json:"cacheRead"`
-	CacheCreation           float64 `json:"cacheCreation"`
-	PromptConfigured        bool    `json:"promptConfigured"`
-	CompletionConfigured    bool    `json:"completionConfigured"`
-	CacheReadConfigured     bool    `json:"cacheReadConfigured"`
-	CacheCreationConfigured bool    `json:"cacheCreationConfigured"`
-}
-
-func basePriceRuleOf(price store.ModelPrice) basePriceRule {
-	return basePriceRule{
-		Prompt:                  price.Prompt,
-		Completion:              price.Completion,
-		Cache:                   price.Cache,
-		CacheRead:               price.CacheRead,
-		CacheCreation:           price.CacheCreation,
-		PromptConfigured:        price.PromptConfigured,
-		CompletionConfigured:    price.CompletionConfigured,
-		CacheReadConfigured:     price.CacheReadConfigured,
-		CacheCreationConfigured: price.CacheCreationConfigured,
-	}
-}
-
-func modelPriceRuleSignature(price store.ModelPrice) string {
-	if price.Source == SyncSourceModelsDev && price.RawJSON != "" {
-		if signature, ok := modelsDevPriceRuleSignature(price.RawJSON); ok {
-			return "models.dev:" + signature
-		}
-	}
-	rule, _ := json.Marshal(basePriceRuleOf(price))
-	return "base:" + string(rule)
-}
-
-func modelsDevPriceRuleSignature(rawJSON string) (string, bool) {
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(rawJSON), &entry); err != nil {
-		return "", false
-	}
-	signature := map[string]any{}
-	if cost, ok := entry["cost"]; ok {
-		signature["cost"] = cost
-	}
-	if experimental, ok := entry["experimental"].(map[string]any); ok {
-		if modes, ok := experimental["modes"].(map[string]any); ok {
-			modeCosts := map[string]any{}
-			for modeName, rawMode := range modes {
-				mode, ok := rawMode.(map[string]any)
-				if !ok {
-					continue
-				}
-				if cost, ok := mode["cost"]; ok {
-					modeCosts[modeName] = cost
-				}
-			}
-			if len(modeCosts) > 0 {
-				signature["experimentalModeCosts"] = modeCosts
-			}
-		}
-	}
-	encoded, err := json.Marshal(signature)
-	return string(encoded), err == nil
-}
-
 func modelsDevModelID(sourceModelID string) (string, bool) {
 	_, modelID, ok := strings.Cut(strings.TrimSpace(sourceModelID), "/")
 	modelID = strings.TrimSpace(modelID)
 	return modelID, ok && modelID != ""
-}
-
-func collectModelsDevModelIDs(prices map[string]store.ModelPrice) map[string]struct{} {
-	modelIDs := map[string]struct{}{}
-	for _, price := range prices {
-		if price.Source != SyncSourceModelsDev {
-			continue
-		}
-		if modelID, ok := modelsDevModelID(price.SourceModelID); ok {
-			modelIDs[strings.ToLower(modelID)] = struct{}{}
-		}
-	}
-	return modelIDs
 }
 
 func fetchLiteLLMModelPrices(ctx context.Context, syncURL string, client *http.Client) (map[string]store.ModelPrice, int, error) {
@@ -908,51 +971,88 @@ type priceSelectionResult struct {
 	Unmatched  []string
 }
 
-type modelPriceMatch struct {
-	Key   string
-	Price store.ModelPrice
-}
-
 type modelPriceEntry struct {
-	key            string
-	price          store.ModelPrice
-	identities     []string
-	signature      string
-	signatureReady bool
+	key              string
+	price            store.ModelPrice
+	directIdentities []string
+	aliasIdentities  []string
 }
 
 type modelPriceMatcher struct {
-	entries   []modelPriceEntry
-	exact     map[string][]int
-	caseFold  map[string][]int
-	tail      map[string][]int
-	canonical map[string][]int
+	entries     []modelPriceEntry
+	exact       map[string][]int
+	caseFold    map[string][]int
+	aliasExact  map[string][]int
+	aliasFold   map[string][]int
+	tail        map[string][]int
+	canonical   map[string][]int
+	sourceEntry map[string][]int
+	sources     []string
+	metadata    modelPriceMatchMetadata
 }
 
 func newModelPriceMatcher(prices map[string]store.ModelPrice) *modelPriceMatcher {
-	matcher := &modelPriceMatcher{
-		entries:   make([]modelPriceEntry, 0, len(prices)),
-		exact:     make(map[string][]int, len(prices)),
-		caseFold:  make(map[string][]int, len(prices)),
-		tail:      make(map[string][]int, len(prices)),
-		canonical: make(map[string][]int, len(prices)),
+	collection := modelPriceCollection{
+		Entries: make([]modelPriceSourceEntry, 0, len(prices)),
 	}
 	for _, key := range sortedPriceKeys(prices) {
-		price := prices[key]
-		identities := modelPriceIdentities(key, price)
+		collection.Entries = append(collection.Entries, modelPriceSourceEntry{
+			Key:   key,
+			Price: prices[key],
+		})
+	}
+	return newModelPriceCollectionMatcher(collection)
+}
+
+func newModelPriceCollectionMatcher(collection modelPriceCollection) *modelPriceMatcher {
+	matcher := &modelPriceMatcher{
+		entries:     make([]modelPriceEntry, 0, len(collection.Entries)),
+		exact:       make(map[string][]int, len(collection.Entries)),
+		caseFold:    make(map[string][]int, len(collection.Entries)),
+		aliasExact:  make(map[string][]int, len(collection.Entries)),
+		aliasFold:   make(map[string][]int, len(collection.Entries)),
+		tail:        make(map[string][]int, len(collection.Entries)),
+		canonical:   make(map[string][]int, len(collection.Entries)),
+		sourceEntry: make(map[string][]int, 4),
+		metadata:    collection.Metadata,
+	}
+	for _, sourceEntry := range collection.Entries {
+		key := sourceEntry.Key
+		price := sourceEntry.Price
+		directIdentities, aliasIdentities := modelPriceEntryIdentities(key, price)
 		entryIndex := len(matcher.entries)
 		matcher.entries = append(matcher.entries, modelPriceEntry{
-			key:        key,
-			price:      price,
-			identities: identities,
+			key:              key,
+			price:            price,
+			directIdentities: directIdentities,
+			aliasIdentities:  aliasIdentities,
 		})
-		for _, identity := range identities {
+		source := strings.TrimSpace(price.Source)
+		if _, exists := matcher.sourceEntry[source]; !exists {
+			matcher.sources = append(matcher.sources, source)
+		}
+		matcher.sourceEntry[source] = append(matcher.sourceEntry[source], entryIndex)
+		for _, identity := range directIdentities {
 			appendModelPriceIndex(matcher.exact, identity, entryIndex)
 			appendModelPriceIndex(matcher.caseFold, strings.ToLower(identity), entryIndex)
 			appendModelPriceIndex(matcher.tail, canonicalModelTail(identity), entryIndex)
 			appendModelPriceIndex(matcher.canonical, canonicalModelID(identity), entryIndex)
 		}
+		for _, identity := range aliasIdentities {
+			appendModelPriceIndex(matcher.aliasExact, identity, entryIndex)
+			appendModelPriceIndex(matcher.aliasFold, strings.ToLower(identity), entryIndex)
+			appendModelPriceIndex(matcher.tail, canonicalModelTail(identity), entryIndex)
+			appendModelPriceIndex(matcher.canonical, canonicalModelID(identity), entryIndex)
+		}
 	}
+	sort.SliceStable(matcher.sources, func(i, j int) bool {
+		leftPriority := modelPriceSourcePriority(matcher.sources[i])
+		rightPriority := modelPriceSourcePriority(matcher.sources[j])
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return matcher.sources[i] < matcher.sources[j]
+	})
 	return matcher
 }
 
@@ -968,11 +1068,24 @@ func appendModelPriceIndex(index map[string][]int, identity string, entryIndex i
 }
 
 func selectModelPrices(prices map[string]store.ModelPrice, models []string) priceSelectionResult {
+	collection := modelPriceCollection{
+		Entries: make([]modelPriceSourceEntry, 0, len(prices)),
+	}
+	for _, key := range sortedPriceKeys(prices) {
+		collection.Entries = append(collection.Entries, modelPriceSourceEntry{
+			Key:   key,
+			Price: prices[key],
+		})
+	}
+	return selectModelPriceCollection(collection, models)
+}
+
+func selectModelPriceCollection(collection modelPriceCollection, models []string) priceSelectionResult {
 	result := priceSelectionResult{
 		Prices:  map[string]store.ModelPrice{},
 		Matched: map[string]store.ModelPrice{},
 	}
-	matcher := newModelPriceMatcher(prices)
+	matcher := newModelPriceCollectionMatcher(collection)
 	if len(models) == 0 {
 		return matcher.selectAllUnambiguousModelPrices()
 	}
@@ -983,18 +1096,13 @@ func selectModelPrices(prices map[string]store.ModelPrice, models []string) pric
 			continue
 		}
 		seen[normalized] = true
-		price, _, ok, indexedMatches := matcher.findAutomaticModelPrice(normalized)
+		price, _, ok, _ := matcher.findAutomaticModelPrice(normalized)
 		if ok {
 			result.Prices[normalized] = price
 			result.Matched[normalized] = price
 			continue
 		}
-		var candidates []SyncCandidate
-		if len(indexedMatches) > 0 {
-			candidates = matcher.candidateModelPricesForIndexes(normalized, indexedMatches)
-		} else {
-			candidates = matcher.findCandidateModelPrices(normalized)
-		}
+		candidates := matcher.findCandidateModelPrices(normalized)
 		if len(candidates) > 0 {
 			result.Candidates = append(result.Candidates, SyncCandidateSet{
 				Model:      normalized,
@@ -1033,7 +1141,7 @@ func (matcher *modelPriceMatcher) selectAllUnambiguousModelPrices() priceSelecti
 	}
 	sort.Strings(orderedModelIDs)
 	for _, modelID := range orderedModelIDs {
-		price, ok := matcher.selectUnambiguousModelPrice(matcher.exact[modelID])
+		price, _, ok, _ := matcher.findAutomaticModelPrice(modelID)
 		if !ok {
 			continue
 		}
@@ -1049,130 +1157,118 @@ func findAutomaticModelPrice(prices map[string]store.ModelPrice, modelID string)
 }
 
 func (matcher *modelPriceMatcher) findAutomaticModelPrice(modelID string) (store.ModelPrice, string, bool, []int) {
-	matches, reason := matcher.indexedModelPriceMatches(modelID)
-	if len(matches) == 0 {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
 		return store.ModelPrice{}, "", false, nil
 	}
-	price, ok := matcher.selectUnambiguousModelPrice(matches)
-	return price, reason, ok, matches
+	allMatches := make([]int, 0)
+	for _, source := range matcher.sources {
+		matches, reason := matcher.indexedModelPriceMatchesForSource(modelID, source)
+		allMatches = appendUniqueModelPriceIndexes(allMatches, matches...)
+		if source == SyncSourceModelsDev && len(matcher.metadata.modelsDevCanonicalByIdentity) > 0 {
+			if officialMatches := matcher.modelsDevOfficialMatches(modelID); len(officialMatches) == 1 {
+				entry := matcher.entries[officialMatches[0]]
+				return entry.price, "models.dev-official", true, allMatches
+			}
+			if strings.Contains(modelID, "/") {
+				directMatches, directReason := matcher.directModelPriceMatchesForSource(modelID, source)
+				allMatches = appendUniqueModelPriceIndexes(allMatches, directMatches...)
+				if len(directMatches) == 1 {
+					return matcher.entries[directMatches[0]].price, directReason, true, allMatches
+				}
+			}
+			continue
+		}
+		if len(matches) == 1 {
+			return matcher.entries[matches[0]].price, reason, true, allMatches
+		}
+	}
+	return store.ModelPrice{}, "", false, allMatches
 }
 
-func (matcher *modelPriceMatcher) indexedModelPriceMatches(modelID string) ([]int, string) {
+func (matcher *modelPriceMatcher) indexedModelPriceMatchesForSource(modelID string, source string) ([]int, string) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
 		return nil, ""
 	}
-	if matches := matcher.exact[modelID]; len(matches) > 0 {
+	if matches := matcher.filterIndexesBySource(matcher.exact[modelID], source); len(matches) > 0 {
 		return matches, "exact"
 	}
-	if matches := matcher.caseFold[strings.ToLower(modelID)]; len(matches) > 0 {
+	if matches := matcher.filterIndexesBySource(matcher.caseFold[strings.ToLower(modelID)], source); len(matches) > 0 {
 		return matches, "case-insensitive"
+	}
+	if matches := matcher.filterIndexesBySource(matcher.aliasExact[modelID], source); len(matches) > 0 {
+		return matches, "source-model-id"
+	}
+	if matches := matcher.filterIndexesBySource(matcher.aliasFold[strings.ToLower(modelID)], source); len(matches) > 0 {
+		return matches, "case-insensitive-source-model-id"
 	}
 	modelTail := canonicalModelTail(modelID)
 	if modelTail != "" {
-		if matches := matcher.tail[modelTail]; len(matches) > 0 {
+		if matches := matcher.filterIndexesBySource(matcher.tail[modelTail], source); len(matches) > 0 {
 			return matches, "provider-prefix"
 		}
 	}
 	modelCanonical := canonicalModelID(modelID)
 	if modelCanonical != "" {
-		if matches := matcher.canonical[modelCanonical]; len(matches) > 0 {
+		if matches := matcher.filterIndexesBySource(matcher.canonical[modelCanonical], source); len(matches) > 0 {
 			return matches, "normalized"
 		}
 	}
 	return nil, ""
 }
 
-func findModelPriceMatches(prices map[string]store.ModelPrice, matchIdentity func(string) bool) []modelPriceMatch {
-	matches := []modelPriceMatch{}
-	for _, key := range sortedPriceKeys(prices) {
-		price := prices[key]
-		for _, identity := range modelPriceIdentities(key, price) {
-			if !matchIdentity(identity) {
-				continue
-			}
-			matches = append(matches, modelPriceMatch{Key: key, Price: price})
-			break
+func (matcher *modelPriceMatcher) directModelPriceMatchesForSource(modelID string, source string) ([]int, string) {
+	if matches := matcher.filterIndexesBySource(matcher.exact[modelID], source); len(matches) > 0 {
+		return matches, "exact"
+	}
+	if matches := matcher.filterIndexesBySource(matcher.caseFold[strings.ToLower(modelID)], source); len(matches) > 0 {
+		return matches, "case-insensitive"
+	}
+	return nil, ""
+}
+
+func (matcher *modelPriceMatcher) filterIndexesBySource(indexes []int, source string) []int {
+	filtered := make([]int, 0, len(indexes))
+	for _, entryIndex := range indexes {
+		if strings.TrimSpace(matcher.entries[entryIndex].price.Source) == source {
+			filtered = appendUniqueModelPriceIndexes(filtered, entryIndex)
 		}
+	}
+	return filtered
+}
+
+func appendUniqueModelPriceIndexes(indexes []int, additions ...int) []int {
+	for _, addition := range additions {
+		exists := false
+		for _, existing := range indexes {
+			if existing == addition {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			indexes = append(indexes, addition)
+		}
+	}
+	return indexes
+}
+
+func (matcher *modelPriceMatcher) modelsDevOfficialMatches(modelID string) []int {
+	canonicalID, ok := matcher.metadata.modelsDevCanonicalModelID(modelID)
+	if !ok {
+		return nil
+	}
+	matches := make([]int, 0, 1)
+	for _, entryIndex := range matcher.sourceEntry[SyncSourceModelsDev] {
+		entry := &matcher.entries[entryIndex]
+		sourceModelID := strings.TrimSpace(entry.price.SourceModelID)
+		if !matcher.metadata.isModelsDevOfficialSourceModelID(sourceModelID) || !strings.EqualFold(sourceModelID, canonicalID) {
+			continue
+		}
+		matches = append(matches, entryIndex)
 	}
 	return matches
-}
-
-func selectUnambiguousModelPrice(matches []modelPriceMatch) (store.ModelPrice, bool) {
-	if len(matches) == 0 {
-		return store.ModelPrice{}, false
-	}
-	if len(matches) == 1 {
-		return matches[0].Price, true
-	}
-	signature := modelPriceRuleSignature(matches[0].Price)
-	selected := matches[0]
-	for _, match := range matches[1:] {
-		if modelPriceRuleSignature(match.Price) != signature {
-			return store.ModelPrice{}, false
-		}
-		if modelPriceMatchLess(match, selected) {
-			selected = match
-		}
-	}
-	return selected.Price, true
-}
-
-func modelPriceMatchLess(left modelPriceMatch, right modelPriceMatch) bool {
-	leftPriority := modelPriceSourcePriority(left.Price.Source)
-	rightPriority := modelPriceSourcePriority(right.Price.Source)
-	if leftPriority != rightPriority {
-		return leftPriority < rightPriority
-	}
-	leftID := strings.TrimSpace(left.Price.SourceModelID)
-	rightID := strings.TrimSpace(right.Price.SourceModelID)
-	if leftID != rightID {
-		return leftID < rightID
-	}
-	return left.Key < right.Key
-}
-
-func (matcher *modelPriceMatcher) selectUnambiguousModelPrice(matches []int) (store.ModelPrice, bool) {
-	if len(matches) == 0 {
-		return store.ModelPrice{}, false
-	}
-	if len(matches) == 1 {
-		return matcher.entries[matches[0]].price, true
-	}
-	signature := matcher.modelPriceRuleSignature(matches[0])
-	selected := matches[0]
-	for _, entryIndex := range matches[1:] {
-		if matcher.modelPriceRuleSignature(entryIndex) != signature {
-			return store.ModelPrice{}, false
-		}
-		if modelPriceEntryLess(&matcher.entries[entryIndex], &matcher.entries[selected]) {
-			selected = entryIndex
-		}
-	}
-	return matcher.entries[selected].price, true
-}
-
-func (matcher *modelPriceMatcher) modelPriceRuleSignature(entryIndex int) string {
-	entry := &matcher.entries[entryIndex]
-	if !entry.signatureReady {
-		entry.signature = modelPriceRuleSignature(entry.price)
-		entry.signatureReady = true
-	}
-	return entry.signature
-}
-
-func modelPriceEntryLess(left *modelPriceEntry, right *modelPriceEntry) bool {
-	leftPriority := modelPriceSourcePriority(left.price.Source)
-	rightPriority := modelPriceSourcePriority(right.price.Source)
-	if leftPriority != rightPriority {
-		return leftPriority < rightPriority
-	}
-	leftID := strings.TrimSpace(left.price.SourceModelID)
-	rightID := strings.TrimSpace(right.price.SourceModelID)
-	if leftID != rightID {
-		return leftID < rightID
-	}
-	return left.key < right.key
 }
 
 func modelPriceSourcePriority(source string) int {
@@ -1188,28 +1284,29 @@ func modelPriceSourcePriority(source string) int {
 	}
 }
 
-func modelPriceIdentities(key string, price store.ModelPrice) []string {
-	identities := make([]string, 0, 3)
-	add := func(identity string) {
+func modelPriceEntryIdentities(key string, price store.ModelPrice) ([]string, []string) {
+	direct := make([]string, 0, 2)
+	aliases := make([]string, 0, 1)
+	add := func(target *[]string, identity string) {
 		identity = strings.TrimSpace(identity)
 		if identity == "" {
 			return
 		}
-		for _, existing := range identities {
+		for _, existing := range *target {
 			if existing == identity {
 				return
 			}
 		}
-		identities = append(identities, identity)
+		*target = append(*target, identity)
 	}
-	add(key)
-	add(price.SourceModelID)
+	add(&direct, key)
+	add(&direct, price.SourceModelID)
 	if price.Source == SyncSourceModelsDev {
 		if modelID, ok := modelsDevModelID(price.SourceModelID); ok {
-			add(modelID)
+			add(&aliases, modelID)
 		}
 	}
-	return identities
+	return direct, aliases
 }
 
 func findCandidateModelPrices(prices map[string]store.ModelPrice, modelID string) []SyncCandidate {
@@ -1217,11 +1314,16 @@ func findCandidateModelPrices(prices map[string]store.ModelPrice, modelID string
 }
 
 func (matcher *modelPriceMatcher) findCandidateModelPrices(modelID string) []SyncCandidate {
-	candidates := make([]SyncCandidate, 0, maxSyncCandidates)
-	for entryIndex := range matcher.entries {
-		candidates = appendModelPriceCandidate(candidates, modelID, &matcher.entries[entryIndex])
+	candidates := make([]SyncCandidate, 0, maxSyncCandidates*len(matcher.sources))
+	for _, source := range matcher.sources {
+		indexes, _ := matcher.indexedModelPriceMatchesForSource(modelID, source)
+		if len(indexes) == 0 {
+			indexes = matcher.sourceEntry[source]
+		}
+		sourceCandidates := matcher.candidateModelPricesForIndexes(modelID, indexes)
+		candidates = append(candidates, sourceCandidates...)
 	}
-	return sortAndLimitModelPriceCandidates(candidates)
+	return candidates
 }
 
 func (matcher *modelPriceMatcher) candidateModelPricesForIndexes(modelID string, indexes []int) []SyncCandidate {
@@ -1229,17 +1331,25 @@ func (matcher *modelPriceMatcher) candidateModelPricesForIndexes(modelID string,
 	for _, entryIndex := range indexes {
 		candidates = appendModelPriceCandidate(candidates, modelID, &matcher.entries[entryIndex])
 	}
-	return sortAndLimitModelPriceCandidates(candidates)
+	return matcher.sortAndLimitModelPriceCandidates(candidates)
 }
 
 func appendModelPriceCandidate(candidates []SyncCandidate, modelID string, entry *modelPriceEntry) []SyncCandidate {
 	score := 0.0
 	reason := ""
-	for _, identity := range entry.identities {
+	for _, identity := range entry.directIdentities {
 		candidateScore, candidateReason := modelIdentitySimilarity(modelID, identity)
 		if candidateScore > score {
 			score = candidateScore
 			reason = candidateReason
+		}
+	}
+	for _, identity := range entry.aliasIdentities {
+		candidateScore, _ := modelIdentitySimilarity(modelID, identity)
+		candidateScore = math.Min(candidateScore, 0.94)
+		if candidateScore > score {
+			score = candidateScore
+			reason = "same-model-with-provider-prefix"
 		}
 	}
 	if score < minCandidateScore && !(score >= minWeakCandidateScore && isWeakRecallReason(reason)) {
@@ -1257,8 +1367,13 @@ func appendModelPriceCandidate(candidates []SyncCandidate, modelID string, entry
 	})
 }
 
-func sortAndLimitModelPriceCandidates(candidates []SyncCandidate) []SyncCandidate {
+func (matcher *modelPriceMatcher) sortAndLimitModelPriceCandidates(candidates []SyncCandidate) []SyncCandidate {
 	sort.SliceStable(candidates, func(i, j int) bool {
+		leftOfficial := candidates[i].Price.Source == SyncSourceModelsDev && matcher.metadata.isModelsDevOfficialSourceModelID(candidates[i].SourceModelID)
+		rightOfficial := candidates[j].Price.Source == SyncSourceModelsDev && matcher.metadata.isModelsDevOfficialSourceModelID(candidates[j].SourceModelID)
+		if leftOfficial != rightOfficial {
+			return leftOfficial
+		}
 		if candidates[i].Score == candidates[j].Score {
 			return candidates[i].SourceModelID < candidates[j].SourceModelID
 		}
@@ -1287,14 +1402,13 @@ func normalizedRequestedModels(models []string) []string {
 	return normalized
 }
 
-func modelPricesCoverRequested(prices map[string]store.ModelPrice, models []string) bool {
+func modelPriceCollectionCoversRequested(collection modelPriceCollection, models []string) bool {
 	if len(models) == 0 {
 		return false
 	}
-	matcher := newModelPriceMatcher(prices)
+	matcher := newModelPriceCollectionMatcher(collection)
 	for _, modelID := range models {
-		matches, _ := matcher.indexedModelPriceMatches(modelID)
-		if len(matches) == 0 {
+		if _, _, ok, _ := matcher.findAutomaticModelPrice(modelID); !ok {
 			return false
 		}
 	}

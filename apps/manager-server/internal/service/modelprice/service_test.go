@@ -2,6 +2,8 @@ package modelprice
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,12 +89,48 @@ func TestFetchModelsDevModelPrices(t *testing.T) {
 	if !ok || unique.SourceModelID != "provider-a/unique-model" {
 		t.Fatalf("unique alias = %#v", unique)
 	}
-	sameRule, ok := selection.Prices["same-rule"]
-	if !ok || sameRule.SourceModelID != "provider-b/same-rule" {
-		t.Fatalf("same-rule alias = %#v", sameRule)
+	if _, ok := selection.Prices["same-rule"]; ok ||
+		!hasCandidate(selection, "same-rule", "provider-b/same-rule") ||
+		!hasCandidate(selection, "same-rule", "provider-c/same-rule") {
+		t.Fatalf("same-rule ambiguity = %#v", selection)
+	}
+	if len(selection.Candidates) != 1 || len(selection.Unmatched) != 0 {
+		t.Fatalf("unexpected selection result = %#v", selection)
+	}
+}
+
+func TestDecodeModelsDevCatalogSelectsCanonicalOfficialPrice(t *testing.T) {
+	fetched, skipped, err := decodeModelsDevPriceSource(strings.NewReader(`{
+		"models": {
+			"openai/gpt-5.5": {"name":"GPT 5.5"}
+		},
+		"providers": {
+			"abacus": {"models": {"gpt-5.5": {"cost":{"input":9,"output":18}}}},
+			"openai": {"models": {"gpt-5.5": {"cost":{"input":1,"output":2}}}},
+			"third-party": {"models": {"gpt-5.5": {"cost":{"input":7,"output":14}}}}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("decode models.dev catalog: %v", err)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d", skipped)
+	}
+
+	collection := collectionFromFetchedSource(fetched)
+	selection := selectModelPriceCollection(collection, []string{"gpt-5.5"})
+	price, ok := selection.Prices["gpt-5.5"]
+	if !ok || price.Source != SyncSourceModelsDev || price.SourceModelID != "openai/gpt-5.5" || price.Prompt != 1 {
+		t.Fatalf("official selection = %#v", selection)
 	}
 	if len(selection.Candidates) != 0 || len(selection.Unmatched) != 0 {
-		t.Fatalf("unexpected selection result = %#v", selection)
+		t.Fatalf("official selection required confirmation: %#v", selection)
+	}
+
+	scoped := selectModelPriceCollection(collection, []string{"abacus/gpt-5.5"})
+	price, ok = scoped.Prices["abacus/gpt-5.5"]
+	if !ok || price.SourceModelID != "abacus/gpt-5.5" || price.Prompt != 9 {
+		t.Fatalf("explicit provider selection = %#v", scoped)
 	}
 }
 
@@ -161,6 +199,18 @@ func TestDecodeModelsDevRejectsCatalogWithoutUsablePrices(t *testing.T) {
 				t.Fatalf("decode error = %v, prices = %#v", err, prices)
 			}
 		})
+	}
+}
+
+func TestDecodeModelsDevRejectsCatalogWithoutCanonicalModels(t *testing.T) {
+	for _, payload := range []string{
+		`{"providers":{"abacus":{"models":{"gpt-test":{"cost":{"input":1}}}}}}`,
+		`{"models":null,"providers":{"abacus":{"models":{"gpt-test":{"cost":{"input":1}}}}}}`,
+	} {
+		fetched, _, err := decodeModelsDevPriceSource(strings.NewReader(payload))
+		if err == nil || !strings.Contains(err.Error(), "no canonical models") {
+			t.Fatalf("decode error = %v, fetched = %#v", err, fetched)
+		}
 	}
 }
 
@@ -394,7 +444,8 @@ func TestModelsDevCacheFailureFallsBackWithoutStalePrices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prime models.dev source: %v", err)
 	}
-	if len(sources) != 1 || sources[0] != SyncSourceModelsDev || prices["openai/gpt-test"].Prompt != 9 {
+	price, ok := collectionPrice(prices, SyncSourceModelsDev, "openai/gpt-test")
+	if len(sources) != 1 || sources[0] != SyncSourceModelsDev || !ok || price.Prompt != 9 {
 		t.Fatalf("primed sources = %#v, prices = %#v", sources, prices)
 	}
 	if got := liteLLMRequests.Load(); got != 0 {
@@ -412,11 +463,11 @@ func TestModelsDevCacheFailureFallsBackWithoutStalePrices(t *testing.T) {
 	if len(sourceResults) != 2 || sourceResults[0].Source != SyncSourceModelsDev || sourceResults[0].Error == "" || sourceResults[1].Source != SyncSourceLiteLLM {
 		t.Fatalf("fallback source results = %#v", sourceResults)
 	}
-	price := prices["gpt-test"]
-	if price.Source != SyncSourceLiteLLM || price.Prompt != 1 {
+	price, ok = collectionPrice(prices, SyncSourceLiteLLM, "gpt-test")
+	if !ok || price.Source != SyncSourceLiteLLM || price.Prompt != 1 {
 		t.Fatalf("fallback price = %#v", price)
 	}
-	if _, exists := prices["openai/gpt-test"]; exists {
+	if _, exists := collectionPrice(prices, SyncSourceModelsDev, "openai/gpt-test"); exists {
 		t.Fatalf("stale models.dev price was reused: %#v", prices)
 	}
 }
@@ -456,7 +507,7 @@ func TestFetchAllModelPricesFallsBackWhenPreferredSourceHangs(t *testing.T) {
 		sourceResults[0].Error == "" || sourceResults[1].Source != SyncSourceLiteLLM {
 		t.Fatalf("fallback source results = %#v", sourceResults)
 	}
-	if price := prices["gpt-test"]; price.Source != SyncSourceLiteLLM || price.Prompt != 1 {
+	if price, ok := collectionPrice(prices, SyncSourceLiteLLM, "gpt-test"); !ok || price.Source != SyncSourceLiteLLM || price.Prompt != 1 {
 		t.Fatalf("fallback price = %#v", price)
 	}
 }
@@ -671,7 +722,7 @@ func TestPreserveFailedSourcePricesReportsOnlyRequestedModels(t *testing.T) {
 	}
 }
 
-func TestSelectModelPricesRequiresConfirmationForScopedIdentityCollision(t *testing.T) {
+func TestSelectModelPricesPrefersDirectScopedIdentity(t *testing.T) {
 	prices := map[string]store.ModelPrice{
 		"openai/gpt-test": {
 			Prompt:           1,
@@ -692,12 +743,8 @@ func TestSelectModelPricesRequiresConfirmationForScopedIdentityCollision(t *test
 	}
 
 	selection := selectModelPrices(prices, []string{"openai/gpt-test"})
-	if len(selection.Prices) != 0 || len(selection.Candidates) != 1 {
+	if selection.Prices["openai/gpt-test"].SourceModelID != "openai/gpt-test" || len(selection.Candidates) != 0 {
 		t.Fatalf("collision selection = %#v", selection)
-	}
-	if !hasCandidate(selection, "openai/gpt-test", "openai/gpt-test") ||
-		!hasCandidate(selection, "openai/gpt-test", "crossmodel/openai/gpt-test") {
-		t.Fatalf("collision candidates = %#v", selection.Candidates)
 	}
 
 	scoped := selectModelPrices(prices, []string{"crossmodel/openai/gpt-test"})
@@ -706,8 +753,8 @@ func TestSelectModelPricesRequiresConfirmationForScopedIdentityCollision(t *test
 	}
 
 	all := selectModelPrices(prices, nil)
-	if _, ok := all.Prices["openai/gpt-test"]; ok {
-		t.Fatalf("unsafe colliding alias imported by empty sync: %#v", all.Prices)
+	if all.Prices["openai/gpt-test"].SourceModelID != "openai/gpt-test" {
+		t.Fatalf("direct scoped identity missing from empty sync: %#v", all.Prices)
 	}
 	if all.Prices["gpt-test"].SourceModelID != "openai/gpt-test" {
 		t.Fatalf("safe direct alias missing from empty sync: %#v", all.Prices)
@@ -744,7 +791,7 @@ func TestSelectModelPricesTreatsAdvancedPricingDifferencesAsAmbiguous(t *testing
 	}
 }
 
-func TestModelsDevAmbiguityBlocksLowerPriorityBareFallback(t *testing.T) {
+func TestModelsDevAmbiguityContinuesToLowerPriorityFallback(t *testing.T) {
 	modelsDev := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -769,11 +816,116 @@ func TestModelsDevAmbiguityBlocksLowerPriorityBareFallback(t *testing.T) {
 	if len(sources) != 2 || sources[0] != SyncSourceModelsDev || sources[1] != SyncSourceLiteLLM {
 		t.Fatalf("sources = %#v", sources)
 	}
-	if _, ok := prices["shared"]; ok {
-		t.Fatalf("lower-priority bare fallback bypassed ambiguity protection: %#v", prices["shared"])
+	selection := selectModelPriceCollection(prices, []string{"shared"})
+	if price, ok := selection.Prices["shared"]; !ok || price.Source != SyncSourceLiteLLM || price.Prompt != 9 {
+		t.Fatalf("lower-priority fallback selection = %#v", selection)
 	}
-	if _, ok := prices["fallback-only"]; !ok {
+	if _, ok := collectionPrice(prices, SyncSourceLiteLLM, "fallback-only"); !ok {
 		t.Fatalf("unrelated fallback model missing: %#v", prices)
+	}
+}
+
+func TestLiteLLMAmbiguityContinuesToOpenRouter(t *testing.T) {
+	syncURL := "https://example.test/prices"
+	service := &Service{syncSources: []priceSyncSource{
+		{
+			Source: SyncSourceModelsDev,
+			URL:    &syncURL,
+			Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+				return map[string]store.ModelPrice{}, 0, nil
+			}),
+		},
+		{
+			Source: SyncSourceLiteLLM,
+			URL:    &syncURL,
+			Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+				return map[string]store.ModelPrice{
+					"provider-a/shared": {Prompt: 1, SourceModelID: "provider-a/shared"},
+					"provider-b/shared": {Prompt: 2, SourceModelID: "provider-b/shared"},
+				}, 0, nil
+			}),
+		},
+		{
+			Source: SyncSourceOpenRouter,
+			URL:    &syncURL,
+			Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+				return map[string]store.ModelPrice{
+					"shared": {Prompt: 3, SourceModelID: "shared"},
+				}, 0, nil
+			}),
+		},
+	}}
+
+	prices, _, sources, _, err := service.fetchAllModelPrices(context.Background(), nil, []string{"shared"})
+	if err != nil {
+		t.Fatalf("fetch model prices: %v", err)
+	}
+	if got := strings.Join(sources, ","); got != "models.dev,litellm,openrouter" {
+		t.Fatalf("sources = %q", got)
+	}
+	selection := selectModelPriceCollection(prices, []string{"shared"})
+	price, ok := selection.Prices["shared"]
+	if !ok || price.Source != SyncSourceOpenRouter || price.SourceModelID != "shared" || price.Prompt != 3 {
+		t.Fatalf("OpenRouter fallback selection = %#v", selection)
+	}
+}
+
+func TestSelectModelPriceCollectionKeepsCandidatesFromEverySource(t *testing.T) {
+	metadata := newModelsDevMatchMetadata(map[string]json.RawMessage{
+		"openai/gpt-5.5": json.RawMessage(`{}`),
+	})
+	metadata.modelsDevOfficialSourceModelIDs = map[string]struct{}{
+		normalizeModelPriceIdentity("openai/gpt-5.5"): {},
+	}
+	collection := modelPriceCollection{
+		Metadata: metadata,
+		Entries: []modelPriceSourceEntry{
+			{
+				Key: "openai/gpt-5.5",
+				Price: store.ModelPrice{
+					Prompt: 2, Source: SyncSourceLiteLLM, SourceModelID: "openai/gpt-5.5",
+				},
+			},
+			{
+				Key: "openai/gpt-5.5",
+				Price: store.ModelPrice{
+					Prompt: 3, Source: SyncSourceOpenRouter, SourceModelID: "openai/gpt-5.5",
+				},
+			},
+		},
+	}
+	for index := range 10 {
+		sourceModelID := fmt.Sprintf("provider-%02d/gpt-5.5", index)
+		collection.Entries = append(collection.Entries, modelPriceSourceEntry{
+			Key: sourceModelID,
+			Price: store.ModelPrice{
+				Prompt: float64(index + 10), Source: SyncSourceModelsDev, SourceModelID: sourceModelID,
+			},
+		})
+	}
+	collection.Entries = append(collection.Entries, modelPriceSourceEntry{
+		Key: "openai/gpt-5.5",
+		Price: store.ModelPrice{
+			Prompt: 1, Source: SyncSourceModelsDev, SourceModelID: "openai/gpt-5.5",
+		},
+	})
+
+	selection := selectModelPriceCollection(collection, []string{"gpt-5.5-latest"})
+	if len(selection.Prices) != 0 || len(selection.Candidates) != 1 || len(selection.Unmatched) != 0 {
+		t.Fatalf("fuzzy selection = %#v", selection)
+	}
+	candidates := selection.Candidates[0].Candidates
+	if len(candidates) != 10 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	if candidates[0].Price.Source != SyncSourceModelsDev || candidates[0].SourceModelID != "openai/gpt-5.5" {
+		t.Fatalf("official models.dev candidate was not prioritized: %#v", candidates)
+	}
+	if got := candidateSources(candidates, "openai/gpt-5.5"); strings.Join(got, ",") != "models.dev,litellm,openrouter" {
+		t.Fatalf("cross-source candidate identities = %#v", candidates)
+	}
+	if count := candidateSourceCount(candidates, SyncSourceModelsDev); count != maxSyncCandidates {
+		t.Fatalf("models.dev candidate count = %d, want %d: %#v", count, maxSyncCandidates, candidates)
 	}
 }
 
@@ -824,7 +976,7 @@ func TestFetchAllModelPricesStopsAfterRequestedModelsAreCovered(t *testing.T) {
 		wantCalls   [3]int32
 	}{
 		{name: "models.dev coverage", models: []string{"primary"}, wantSources: SyncSourceModelsDev, wantCalls: [3]int32{1, 0, 0}},
-		{name: "models.dev ambiguity", models: []string{"shared"}, wantSources: SyncSourceModelsDev, wantCalls: [3]int32{1, 0, 0}},
+		{name: "models.dev ambiguity", models: []string{"shared"}, wantSources: SyncSourceModelsDev + "," + SyncSourceLiteLLM + "," + SyncSourceOpenRouter, wantCalls: [3]int32{1, 1, 1}},
 		{name: "LiteLLM completes coverage", models: []string{"primary", "lite-only"}, wantSources: SyncSourceModelsDev + "," + SyncSourceLiteLLM, wantCalls: [3]int32{1, 1, 0}},
 		{name: "OpenRouter still required", models: []string{"router-only"}, wantSources: SyncSourceModelsDev + "," + SyncSourceLiteLLM + "," + SyncSourceOpenRouter, wantCalls: [3]int32{1, 1, 1}},
 		{name: "empty request fetches all", models: nil, wantSources: SyncSourceModelsDev + "," + SyncSourceLiteLLM + "," + SyncSourceOpenRouter, wantCalls: [3]int32{1, 1, 1}},
@@ -838,26 +990,26 @@ func TestFetchAllModelPricesStopsAfterRequestedModelsAreCovered(t *testing.T) {
 				{
 					Source: SyncSourceModelsDev,
 					URL:    &syncURL,
-					Fetch: func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+					Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
 						calls[0].Add(1)
 						return modelsDevPrices, 0, nil
-					},
+					}),
 				},
 				{
 					Source: SyncSourceLiteLLM,
 					URL:    &syncURL,
-					Fetch: func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+					Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
 						calls[1].Add(1)
 						return liteLLMPrices, 0, nil
-					},
+					}),
 				},
 				{
 					Source: SyncSourceOpenRouter,
 					URL:    &syncURL,
-					Fetch: func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
+					Fetch: wrapModelPriceMapFetcher(func(context.Context, string, *http.Client) (map[string]store.ModelPrice, int, error) {
 						calls[2].Add(1)
 						return openRouterPrices, 0, nil
-					},
+					}),
 				},
 			}}
 
@@ -877,7 +1029,7 @@ func TestFetchAllModelPricesStopsAfterRequestedModelsAreCovered(t *testing.T) {
 				}
 			}
 			if test.name == "models.dev ambiguity" {
-				selection := selectModelPrices(prices, test.models)
+				selection := selectModelPriceCollection(prices, test.models)
 				if len(selection.Prices) != 0 || len(selection.Candidates) != 1 {
 					t.Fatalf("ambiguity selection = %#v", selection)
 				}
@@ -1076,6 +1228,46 @@ func hasCandidate(selection priceSelectionResult, model string, sourceModelID st
 		}
 	}
 	return false
+}
+
+func collectionPrice(collection modelPriceCollection, source string, sourceModelID string) (store.ModelPrice, bool) {
+	for _, entry := range collection.Entries {
+		if entry.Price.Source == source && entry.Price.SourceModelID == sourceModelID {
+			return entry.Price, true
+		}
+	}
+	return store.ModelPrice{}, false
+}
+
+func collectionFromFetchedSource(fetched fetchedModelPriceSource) modelPriceCollection {
+	collection := modelPriceCollection{Metadata: fetched.Metadata}
+	for _, key := range sortedPriceKeys(fetched.Prices) {
+		collection.Entries = append(collection.Entries, modelPriceSourceEntry{
+			Key:   key,
+			Price: fetched.Prices[key],
+		})
+	}
+	return collection
+}
+
+func candidateSources(candidates []SyncCandidate, sourceModelID string) []string {
+	sources := make([]string, 0)
+	for _, candidate := range candidates {
+		if candidate.SourceModelID == sourceModelID {
+			sources = append(sources, candidate.Price.Source)
+		}
+	}
+	return sources
+}
+
+func candidateSourceCount(candidates []SyncCandidate, source string) int {
+	count := 0
+	for _, candidate := range candidates {
+		if candidate.Price.Source == source {
+			count++
+		}
+	}
+	return count
 }
 
 func closePrice(left float64, right float64) bool {

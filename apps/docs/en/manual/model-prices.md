@@ -17,7 +17,7 @@ Open the [Model Prices Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/mo
 
 Synchronization only occurs when the user triggers it and may use the current Manager Server proxy configuration.
 
-The same models.dev model ID may be offered by multiple providers, and a real model ID may itself contain `/`. CPAMP compares source identities separately from original model IDs and only matches automatically when the complete pricing metadata, including tiers and experimental-mode prices, is consistent. Identity or price conflicts remain in the candidate-confirmation flow; a same-named LiteLLM or OpenRouter entry cannot bypass that conflict.
+Automatic matching runs strictly in models.dev, LiteLLM, then OpenRouter order. CPAMP uses the canonical model metadata in the models.dev catalog to prefer the first-party official entry. A source is saved automatically only when it has one clear, strong identity match; fuzzy similarities are never auto-confirmed. An ambiguous source falls through to the next source. If none of the three sources yields a unique match, the confirmation list keeps candidates from each source separately, even when they share the same original model ID.
 
 The current sync maps models.dev `cost.input`, `cost.output`, `cost.cache_read`, and `cost.cache_write`, converts valid `cost.tiers` context tiers into CPAMP billing rules, and maps `experimental.modes.fast.cost` to short-context Fast/Priority prices. The complete model object remains available in raw metadata; reasoning prices, unknown experimental modes, unknown tier types, and rules that cannot be validated safely do not activate automatic billing.
 
@@ -25,7 +25,7 @@ The current sync maps models.dev `cost.input`, `cost.output`, `cost.cache_read`,
 
 - When models.dev is temporarily unavailable, CPAMP continues with LiteLLM and OpenRouter.
 - A transient models.dev failure cannot automatically replace a stored models.dev price with a lower-priority source; fallback sources may still fill models that have no local price.
-- A fallback source may replace a model normally when models.dev responds successfully but does not contain that model.
+- When models.dev responds successfully but has no official entry or remains ambiguous, fallback sources are tried in order; only a unique strong identity match may replace the model.
 - If every source fails, synchronization stops before any database write and existing prices remain unchanged.
 - A synchronized price remains the last-known-good value until a later successful sync or a manual edit; `syncedAtMs` indicates its freshness.
 

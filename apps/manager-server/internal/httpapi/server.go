@@ -17,7 +17,7 @@ var embeddedPanel embed.FS
 
 const serviceID = "cpa-manager-plus"
 
-var modelsDevModelPriceSyncURL = "https://models.dev/api.json"
+var modelsDevModelPriceSyncURL = "https://models.dev/catalog.json"
 var modelPriceSyncURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 var openRouterModelPriceSyncURL = "https://openrouter.ai/api/v1/models"
 

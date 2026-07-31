@@ -25,6 +25,8 @@ import {
   formatContextThreshold,
   formatPriceUnit,
   formatServiceTierRule,
+  getModelPriceCandidateIdentity,
+  groupModelPriceCandidatesBySource,
   resolveContextTierDisplayPrice,
   resolveServiceTierDisplayPrice,
   type ModelPriceFilter,
@@ -405,11 +407,17 @@ export function ModelPricesPage() {
                   const candidates =
                     candidateSets.find((candidateSet) => candidateSet.model === row.model)
                       ?.candidates ?? [];
-                  const selectedSource =
-                    selectedCandidates[row.model] || candidates[0]?.sourceModelId || '';
+                  const candidateGroups = groupModelPriceCandidatesBySource(candidates);
+                  const requestedCandidateIdentity = selectedCandidates[row.model] || '';
                   const selectedCandidate =
-                    candidates.find((candidate) => candidate.sourceModelId === selectedSource) ??
+                    candidates.find(
+                      (candidate) =>
+                        getModelPriceCandidateIdentity(candidate) === requestedCandidateIdentity
+                    ) ??
                     candidates[0];
+                  const selectedCandidateIdentity = selectedCandidate
+                    ? getModelPriceCandidateIdentity(selectedCandidate)
+                    : '';
                   const contextTiers = row.price?.contextTiers ?? [];
                   const serviceTiers = row.price?.serviceTiers ?? [];
 
@@ -528,7 +536,7 @@ export function ModelPricesPage() {
                           ) : candidates.length > 0 && selectedCandidate ? (
                             <div className={styles.candidateControl}>
                               <select
-                                value={selectedSource}
+                                value={selectedCandidateIdentity}
                                 onChange={(event) =>
                                   setSelectedCandidates((previous) => ({
                                     ...previous,
@@ -537,13 +545,17 @@ export function ModelPricesPage() {
                                 }
                                 aria-label={t('model_prices.candidate_select')}
                               >
-                                {candidates.map((candidate) => (
-                                  <option
-                                    key={candidate.sourceModelId}
-                                    value={candidate.sourceModelId}
-                                  >
-                                    {`${candidate.price.source || 'sync'} · ${candidate.sourceModelId} · ${Math.round(candidate.score * 100)}%`}
-                                  </option>
+                                {candidateGroups.map((group) => (
+                                  <optgroup key={group.source} label={group.source}>
+                                    {group.candidates.map((candidate) => {
+                                      const identity = getModelPriceCandidateIdentity(candidate);
+                                      return (
+                                        <option key={identity} value={identity}>
+                                          {`${candidate.sourceModelId} · ${Math.round(candidate.score * 100)}%`}
+                                        </option>
+                                      );
+                                    })}
+                                  </optgroup>
                                 ))}
                               </select>
                               <button
